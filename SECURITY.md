@@ -3,7 +3,7 @@
 圖片紀錄整理助手以瀏覽器本機處理為原則，不主動將照片上傳至伺服器。
 
 - HEIC 解碼元件於 GitHub Actions 部署時由固定版本 `heic-to 1.5.2` 安裝。
-- HEIC fallback 解碼在隔離 Worker 中執行；V3.7.2 最多同時 3 路，行動裝置固定 1 路。
+- HEIC fallback 解碼在隔離 Worker 中執行；V3.8 最多同時 3 路，行動裝置固定 1 路。
 - HEIC Worker Pool 閒置約 30 秒後會自動終止並釋放記憶體。
 - 每張 HEIC 仍先做容器、靜態影像與像素尺寸安全預檢；HEIF/HEIC sequence 仍拒絕處理。
 - ZIP 專案功能使用固定版本 `JSZip 3.10.1`。

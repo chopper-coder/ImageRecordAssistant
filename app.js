@@ -7,7 +7,7 @@
   }
 
   const APP_NAME = '圖片紀錄整理助手';
-  const APP_VERSION = 'V3.7.2';
+  const APP_VERSION = 'V3.8';
   const PHOTOJOB_SCHEMA_VERSION = 2;
   const HISTORY_LIMIT = 30;
   const SUPPORTED_RE = /\.(jpe?g|png|webp|bmp|heic|heif)$/i;
@@ -103,6 +103,9 @@
     thumbObserver: null,
     lastRemovedSnapshot: null,
     toastTimer: null,
+    failedImports: [],
+    lastImportSummary: null,
+    importProgress: { active: false, total: 0, completed: 0, heicTotal: 0, heicDone: 0, failed: 0 },
     };
 
 
@@ -356,6 +359,64 @@
     return `${Math.round(Number(bytes || 0) / 1024 / 1024)} MB`;
   }
 
+  function projectBlobBytes() {
+    return state.items.reduce((sum, item) => sum + Number(item.blob?.size || 0), 0);
+  }
+
+  function exportCandidateIndices(meta = null) {
+    const scope = String(meta?.export_scope || $('exportScope')?.value || 'included');
+    const selected = state.selectedIds;
+    const out = [];
+    state.items.forEach((item, index) => {
+      if (item.excludeExport) return;
+      if (scope === 'selected' && !selected.has(item.id)) return;
+      out.push(index);
+    });
+    return out;
+  }
+
+  function renderExportScopeStatus() {
+    const el = $('exportScopeStatus');
+    if (!el) return;
+    const count = exportCandidateIndices().length;
+    const excluded = state.items.filter((item) => item.excludeExport).length;
+    const scope = $('exportScope')?.value || 'included';
+    el.textContent = scope === 'selected'
+      ? `將輸出 ${count} 張已勾選照片${excluded ? `｜另有 ${excluded} 張標記不輸出` : ''}`
+      : `將輸出 ${count} 張${excluded ? `｜已排除 ${excluded} 張` : ''}`;
+  }
+
+  function renderLargeProjectMonitor() {
+    const ramText = $('ramStatusText');
+    const ramFill = $('ramMeterFill');
+    const importText = $('importProgressText');
+    const failureText = $('importFailureText');
+    const retryBtn = $('retryFailedImportsBtn');
+    const projectBytes = projectBlobBytes();
+    const safeLimit = Math.max(1, maxTotalImageBytesForDevice());
+    let ratio = projectBytes / safeLimit;
+    let text = `專案圖片 ${formatMiB(projectBytes)} / ${formatMiB(safeLimit)}`;
+    const memory = performance?.memory;
+    if (memory && Number(memory.jsHeapSizeLimit) > 0) {
+      const used = Number(memory.usedJSHeapSize || 0), limit = Number(memory.jsHeapSizeLimit || 1);
+      ratio = Math.max(ratio, used / limit);
+      text += `｜JS Heap ${formatMiB(used)} / ${formatMiB(limit)}`;
+    }
+    if (ramText) ramText.textContent = `RAM：${text}`;
+    if (ramFill) ramFill.style.width = `${Math.max(0, Math.min(100, Math.round(ratio * 100)))}%`;
+    const progress = state.importProgress || {};
+    if (importText) {
+      if (progress.active) importText.textContent = `匯入中 ${progress.completed || 0} / ${progress.total || 0}｜HEIC ${progress.heicDone || 0} / ${progress.heicTotal || 0}`;
+      else if (state.lastImportSummary) {
+        const x = state.lastImportSummary;
+        importText.textContent = `最近匯入：成功 ${x.accepted || 0}｜HEIC ${x.heic || 0}｜略過 ${x.skipped || 0}`;
+      } else importText.textContent = '最近匯入：尚無紀錄';
+    }
+    if (failureText) failureText.textContent = `失敗 ${state.failedImports.length} 張`;
+    if (retryBtn) retryBtn.disabled = !state.failedImports.length || state.importRunning;
+    renderExportScopeStatus();
+  }
+
 
   function capturedAtEpoch(value) {
     const t = Date.parse(String(value || ''));
@@ -415,6 +476,7 @@
       card.append(createEl('div', 'dash-value', value), createEl('div', 'dash-label', label));
       host.appendChild(card);
     }
+    renderLargeProjectMonitor();
   }
 
   function sortPhotos(mode) {
@@ -1125,6 +1187,7 @@
       watermark_enabled: Boolean($('watermarkEnabled')?.checked),
       watermark_text: $('watermarkText')?.value.trim() || '',
       smart_long_split: Boolean($('smartLongSplit')?.checked),
+      export_scope: String($('exportScope')?.value || 'included'),
       archived: Boolean(state.caseArchived),
       archived_at: state.caseArchivedAt || '',
     };
@@ -1159,7 +1222,7 @@
         source_format: item.sourceFormat || '', source_bytes: Number(item.sourceBytes || 0), decoder: item.decoder || '',
         source_dimensions: item.sourceDimensions || '', normalized_at: item.normalizedAt || '', privacy: item.privacy || { hasExif: false, hasGps: false },
         captured_at: item.capturedAt || '', capture_source: item.captureSource || '', source_folder: item.sourceFolder || '', import_order: Number(item.importOrder || 0),
-        section: item.section || '', tags: item.tags || '', compare_group: item.compareGroup || '', compare_role: item.compareRole || '',
+        section: item.section || '', tags: item.tags || '', compare_group: item.compareGroup || '', compare_role: item.compareRole || '', exclude_export: Boolean(item.excludeExport),
       })),
       logo: state.logo ? { name: state.logo.name, blob: state.logo.blob } : null,
     };
@@ -1183,7 +1246,7 @@
         source_format: p.source_format || '', source_bytes: Number(p.source_bytes || 0), decoder: p.decoder || '',
         source_dimensions: p.source_dimensions || '', normalized_at: p.normalized_at || '', privacy: p.privacy || { hasExif: false, hasGps: false },
         captured_at: p.captured_at || '', capture_source: p.capture_source || '', source_folder: p.source_folder || '', import_order: Number(p.import_order || 0),
-        section: p.section || '', tags: p.tags || '', compare_group: p.compare_group || '', compare_role: p.compare_role || '',
+        section: p.section || '', tags: p.tags || '', compare_group: p.compare_group || '', compare_role: p.compare_role || '', exclude_export: Boolean(p.exclude_export),
       })),
       logo: snapshot.logo ? { name: snapshot.logo.name, blob: blobIdentity(snapshot.logo.blob) } : null,
     };
@@ -1196,7 +1259,7 @@
       badge.hidden = !state.dirty;
       badge.textContent = state.dirty ? '● 尚未另存' : '';
     }
-    document.title = `${state.dirty ? '● ' : ''}${APP_NAME} ${APP_VERSION}｜HEIC Fast Import & Parallel Decode Edition`;
+    document.title = `${state.dirty ? '● ' : ''}${APP_NAME} ${APP_VERSION}｜Large Project Control & Export Workflow Edition`;
   }
 
   function refreshDirtyState() {
@@ -1779,7 +1842,7 @@
       try {
         jpegBlob = await decodeHeicWithWorker(file, label);
       } catch (error) {
-        if (/Failed to fetch|module|404|載入|Worker/i.test(String(error?.message || ''))) throw new Error('此瀏覽器無法原生讀取 HEIC，且本機 HEIC 解碼元件不存在或無法載入。請使用完整 V3.7.2 GitHub Pages 建置版。');
+        if (/Failed to fetch|module|404|載入|Worker/i.test(String(error?.message || ''))) throw new Error('此瀏覽器無法原生讀取 HEIC，且本機 HEIC 解碼元件不存在或無法載入。請使用完整 V3.8 GitHub Pages 建置版。');
         throw new Error(`${label} HEIC/HEIF 轉換失敗：${error.message || '解碼器無法處理此檔案'}`);
       }
     }
@@ -1870,8 +1933,9 @@
   }
 
   function criticalPreflightIssues(meta = metaPayload()) {
+    const candidateSet = new Set(exportCandidateIndices(meta));
     const overflow = state.items
-      .map((item, index) => singlePageTextWouldTruncate(item, meta) ? index + 1 : null)
+      .map((item, index) => candidateSet.has(index) && singlePageTextWouldTruncate(item, meta) ? index + 1 : null)
       .filter(Boolean);
     if (!overflow.length) return [];
     return [`有 ${overflow.length} 張照片的說明／備註即使改成一頁 1 張仍超出版面（照片 ${overflow.slice(0, 8).map((n) => String(n).padStart(2, '0')).join('、')}${overflow.length > 8 ? '…' : ''}）。為避免正式文件截字，請先縮短文字後再輸出。`];
@@ -1896,10 +1960,12 @@
 
   function buildOutputEntries(meta = metaPayload()) {
     const entries = [];
-    state.items.forEach((item, index) => {
+    for (const index of exportCandidateIndices(meta)) {
+      const item = state.items[index];
+      if (!item) continue;
       const segmentCount = longSplitCount(item, meta);
       for (let segment = 0; segment < segmentCount; segment += 1) entries.push({ index, segment, segmentCount });
-    });
+    }
     return entries;
   }
 
@@ -2071,16 +2137,19 @@
   function preflightIssues() {
     const meta = metaPayload();
     const issues = [];
+    const candidates = exportCandidateIndices(meta);
+    const candidateSet = new Set(candidates);
+    if (!candidates.length) return ['目前輸出範圍沒有可輸出的照片。'];
     if (!meta.case) issues.push('尚未填寫「案件／主題」。');
     if (!meta.date) issues.push('尚未填寫「紀錄日期」。');
-    if (!meta.location && state.items.some((item) => !String(item.location || '').trim())) issues.push('文件地點未填寫，且仍有照片沒有個別地點。');
-    const missingDesc = state.items.map((item, index) => (!String(item.description || '').trim() ? index + 1 : null)).filter(Boolean);
-    if (missingDesc.length) issues.push(`有 ${missingDesc.length} 張照片尚未填寫照片說明（照片 ${missingDesc.slice(0, 8).map((n) => String(n).padStart(2, '0')).join('、')}${missingDesc.length > 8 ? '…' : ''}）。`);
-    const longCount = state.items.filter((item) => itemLayoutCap(item, meta) < meta.per_page).length;
-    const splitCount = state.items.filter((item) => longSplitCount(item, meta) > 1).length;
+    if (!meta.location && candidates.some((index) => !String(state.items[index]?.location || '').trim())) issues.push('文件地點未填寫，且輸出範圍內仍有照片沒有個別地點。');
+    const missingDesc = state.items.map((item, index) => candidateSet.has(index) && !String(item.description || '').trim() ? index + 1 : null).filter(Boolean);
+    if (missingDesc.length) issues.push(`輸出範圍內有 ${missingDesc.length} 張照片尚未填寫照片說明（照片 ${missingDesc.slice(0, 8).map((n) => String(n).padStart(2, '0')).join('、')}${missingDesc.length > 8 ? '…' : ''}）。`);
+    const longCount = candidates.filter((index) => itemLayoutCap(state.items[index], meta) < meta.per_page).length;
+    const splitCount = candidates.filter((index) => longSplitCount(state.items[index], meta) > 1).length;
     if (longCount) issues.push(`有 ${longCount} 張照片說明較長，輸出時會自動降低該頁照片數，避免文字被裁掉。`);
     if (splitCount) issues.push(`有 ${splitCount} 張超長照片會在輸出時智慧分段，原始照片與專案資料不會被切割。`);
-    const gpsCount = state.items.filter((item) => item.privacy?.hasGps).length;
+    const gpsCount = candidates.filter((index) => state.items[index]?.privacy?.hasGps).length;
     if (gpsCount) issues.push(`有 ${gpsCount} 張來源 JPEG 含 GPS EXIF；正式 Word/PDF 會重新編碼移除中繼資料，但 .photojob 仍會保留來源圖片。`);
     return issues;
   }
@@ -2089,7 +2158,9 @@
   function preflightPhotoTargets() {
     const meta = metaPayload();
     const targets = [];
+    const candidateSet = new Set(exportCandidateIndices(meta));
     state.items.forEach((item, index) => {
+      if (!candidateSet.has(index)) return;
       if (!String(item.description || '').trim()) targets.push({ index, label: `照片 ${String(index + 1).padStart(2, '0')}：缺少說明` });
       else if (!String(item.location || '').trim() && !meta.location) targets.push({ index, label: `照片 ${String(index + 1).padStart(2, '0')}：缺少地點` });
     });
@@ -2227,11 +2298,13 @@
 
   function completionBlockingIssues() {
     const meta = metaPayload(); const issues = [...criticalPreflightIssues(meta)];
+    const candidates = exportCandidateIndices(meta);
+    if (!candidates.length) issues.push('目前輸出範圍沒有可輸出的照片。');
     if (!meta.case) issues.push('尚未填寫案件／主題。');
     if (!meta.date) issues.push('尚未填寫紀錄日期。');
-    if (!meta.location && state.items.some((item) => !String(item.location || '').trim())) issues.push('仍有照片缺少地點。');
-    const missing = state.items.filter((item) => !String(item.description || '').trim()).length;
-    if (missing) issues.push(`仍有 ${missing} 張照片缺少照片說明。`);
+    if (!meta.location && candidates.some((index) => !String(state.items[index]?.location || '').trim())) issues.push('輸出範圍內仍有照片缺少地點。');
+    const missing = candidates.filter((index) => !String(state.items[index]?.description || '').trim()).length;
+    if (missing) issues.push(`輸出範圍內仍有 ${missing} 張照片缺少照片說明。`);
     return issues;
   }
 
@@ -2261,13 +2334,13 @@
     $('note').disabled = !ok;
     $('photoName').disabled = !ok;
     $('photoLocation').disabled = !ok;
-    ['photoSection','photoTags','compareGroup','compareRole'].forEach((id) => { if ($(id)) $(id).disabled = !ok; });
+    ['photoSection','photoTags','compareGroup','compareRole','excludeFromExport'].forEach((id) => { if ($(id)) $(id).disabled = !ok; });
     $('batchRenameBtn').disabled = !state.items.length;
     $('saveProjectBtn').disabled = !state.items.length;
     $('previewBtn').disabled = !state.items.length;
     ['wordBtn', 'pdfBtn', 'bothBtn', 'preflightBtn', 'healthBtn'].forEach((id) => { $(id).disabled = !state.items.length; });
-    ['applyBatchDescBtn', 'applyBatchLocationBtn', 'batchRotateLeftBtn', 'batchRotateRightBtn', 'clearSelectionBtn']
-      .forEach((id) => { $(id).disabled = multiCount === 0; });
+    ['applyBatchDescBtn', 'applyBatchLocationBtn', 'batchRotateLeftBtn', 'batchRotateRightBtn', 'clearSelectionBtn', 'applyBatchSectionBtn', 'excludeSelectedBtn', 'includeSelectedBtn']
+      .forEach((id) => { if ($(id)) $(id).disabled = multiCount === 0; });
     $('selectAllBtn').disabled = !state.items.length;
     $('selectedCount').textContent = `已勾選 ${multiCount} 張`;
     if ($('undoBtn')) $('undoBtn').disabled = state.historyUndo.length === 0;
@@ -2283,6 +2356,7 @@
     if (item?.section) subParts.push(`§ ${item.section}`);
     if (item?.compareGroup && item?.compareRole) subParts.push(`${item.compareRole === 'before' ? '前' : '後'}:${item.compareGroup}`);
     if (item?.privacy?.hasGps) subParts.push('GPS');
+    if (item?.excludeExport) subParts.push('🚫 不輸出');
     return subParts.join('｜') || (item?.sourceFormat ? String(item.sourceFormat).toUpperCase() : '圖片');
   }
 
@@ -2294,6 +2368,7 @@
     if (name) { name.textContent = item.displayName; name.title = `原始檔名：${item.originalName}`; }
     const sub = row.querySelector('.photo-sub');
     if (sub) sub.textContent = photoListSubText(item);
+    row.classList.toggle('export-excluded', Boolean(item.excludeExport));
   }
 
   function renderList() {
@@ -2311,14 +2386,30 @@
       return;
     }
     const query = String($('photoFilter')?.value || '').trim().toLocaleLowerCase('zh-Hant');
+    const filterMode = String($('photoFilterMode')?.value || 'all');
+    const docLocation = String($('location')?.value || '').trim();
     let visible = 0;
     state.items.forEach((item, index) => {
-      const haystack = `${item.displayName || ''}\n${item.originalName || ''}\n${item.description || ''}\n${item.location || ''}\n${item.sourceFolder || ''}\n${item.section || ''}\n${item.tags || ''}\n${item.compareGroup || ''}\n${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
+      const haystack = `${item.displayName || ''}
+${item.originalName || ''}
+${item.description || ''}
+${item.location || ''}
+${item.sourceFolder || ''}
+${item.section || ''}
+${item.tags || ''}
+${item.compareGroup || ''}
+${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       if (query && !haystack.includes(query)) return;
+      if (filterMode === 'missingDesc' && String(item.description || '').trim()) return;
+      if (filterMode === 'missingLocation' && (String(item.location || '').trim() || docLocation)) return;
+      if (filterMode === 'heic' && !/hei[cf]/i.test(String(item.sourceFormat || ''))) return;
+      if (filterMode === 'annotated' && !sanitizeAnnotations(item.annotations).length) return;
+      if (filterMode === 'excluded' && !item.excludeExport) return;
+      if (filterMode === 'selected' && !state.selectedIds.has(item.id)) return;
       visible += 1;
       const row = document.createElement('div');
       const multiSelected = state.selectedIds.has(item.id);
-      row.className = `photo-row${index === state.selected ? ' active' : ''}${multiSelected ? ' multi-selected' : ''}`;
+      row.className = `photo-row${index === state.selected ? ' active' : ''}${multiSelected ? ' multi-selected' : ''}${item.excludeExport ? ' export-excluded' : ''}${filterMode !== 'all' ? ' filter-highlight' : ''}`;
       row.dataset.photoId = item.id;
       row.dataset.photoIndex = String(index);
       row.draggable = true;
@@ -2330,7 +2421,7 @@
       check.addEventListener('click', (event) => event.stopPropagation());
       check.addEventListener('change', () => {
         if (check.checked) state.selectedIds.add(item.id); else state.selectedIds.delete(item.id);
-        refreshListSelectionState();
+        if (($('photoFilterMode')?.value || 'all') === 'selected') renderList(); else refreshListSelectionState();
       });
       const thumb = document.createElement('img');
       thumb.className = 'photo-thumb';
@@ -2413,6 +2504,7 @@
       if (check) check.checked = state.selectedIds.has(id);
     });
     if ($('selectedCount')) $('selectedCount').textContent = `已勾選 ${state.selectedIds.size} 張`;
+    renderExportScopeStatus();
     updateButtons();
     updateSmartSections();
   }
@@ -2442,6 +2534,7 @@
       if ($('photoTags')) $('photoTags').value = '';
       if ($('compareGroup')) $('compareGroup').value = '';
       if ($('compareRole')) $('compareRole').value = '';
+      if ($('excludeFromExport')) $('excludeFromExport').checked = false;
       $('rotateLabel').textContent = '目前：0°';
       $('cropSummary').textContent = '裁切：無';
       if ($('photoMeta')) $('photoMeta').textContent = '拍攝時間／來源資料夾：—';
@@ -2465,6 +2558,7 @@
     if ($('photoTags')) $('photoTags').value = item.tags || '';
     if ($('compareGroup')) $('compareGroup').value = item.compareGroup || '';
     if ($('compareRole')) $('compareRole').value = item.compareRole || '';
+    if ($('excludeFromExport')) $('excludeFromExport').checked = Boolean(item.excludeExport);
     $('rotateLabel').textContent = `目前：${item.rotation || 0}°`;
     if ($('annotationCount')) $('annotationCount').textContent = annotationCountText(item);
     if ($('photoMeta')) {
@@ -2578,8 +2672,10 @@
     return [...(dataTransfer?.files || [])].map((file) => ({ file, relativePath: file.webkitRelativePath || '' }));
   }
 
-  async function addFiles(files) {
+  async function addFiles(files, options = {}) {
     const candidates = [...(files || [])].map(fileDescriptor).filter(Boolean);
+    state.failedImports = [];
+    state.lastImportSummary = null;
     if (!candidates.length) {
       setStatus('沒有可加入的檔案；可使用 JPG / PNG / WEBP / BMP / HEIC / HEIF。', 'err');
       return;
@@ -2604,9 +2700,12 @@
     const results = new Array(queue.length);
     let nextIndex = 0;
     let completed = 0;
+    const newFailures = [];
 
     state.importRunning = true;
     state.importCancelRequested = false;
+    state.importProgress = { active: true, total: queue.length, completed: 0, heicTotal: heicCount, heicDone: 0, failed: 0 };
+    renderLargeProjectMonitor();
     showLoading(
       '正在快速匯入照片…',
       heicCount
@@ -2641,7 +2740,11 @@
           }
         } finally {
           completed += 1;
+          if (HEIC_RE.test(file.name || '')) state.importProgress.heicDone += 1;
+          if (results[index] && !results[index].ok && !results[index].canceled) state.importProgress.failed += 1;
+          state.importProgress.completed = completed;
           updateLoadingProgress(completed, queue.length);
+          renderLargeProjectMonitor();
         }
       }
     };
@@ -2651,7 +2754,9 @@
       await Promise.all(workers);
     } finally {
       state.importRunning = false;
+      state.importProgress.active = false;
       hideLoading();
+      renderLargeProjectMonitor();
     }
 
     for (let index = 0; index < results.length; index += 1) {
@@ -2659,7 +2764,10 @@
       if (!result) continue;
       const file = result.descriptor.file;
       if (!result.ok) {
-        if (!result.canceled) skipped.push(`${file.name || '未命名檔案'}：${result.error}`);
+        if (!result.canceled) {
+          skipped.push(`${file.name || '未命名檔案'}：${result.error}`);
+          newFailures.push({ file, relativePath: result.descriptor.relativePath || '', error: result.error });
+        }
         continue;
       }
       const normalized = result.normalized;
@@ -2693,6 +2801,9 @@
       totalBytes += normalized.blob.size;
     }
 
+    state.failedImports = newFailures;
+    state.lastImportSummary = { accepted: accepted.length, heic: convertedHeic, skipped: skipped.length, failed: newFailures.length, total: queue.length, stopped };
+    renderLargeProjectMonitor();
     if (!accepted.length) {
       const stopText = stopped ? '匯入已停止。' : '沒有照片成功加入。';
       setStatus(skipped.length ? `${stopText}${skipped.slice(0, 2).join('；')}` : stopText, stopped ? '' : 'err');
@@ -2703,7 +2814,7 @@
     for (const item of accepted) {
       state.items.push({
         id: uid(), blob: item.blob, originalName: item.originalName, displayName: item.displayName,
-        description: '', note: '', location: autoFolderLocation ? item.suggestedLocation : '', rotation: 0, crop: defaultCrop(), annotations: [], section: '', tags: '', compareGroup: '', compareRole: '', previewUrl: '', thumbUrl: '',
+        description: '', note: '', location: autoFolderLocation ? item.suggestedLocation : '', rotation: 0, crop: defaultCrop(), annotations: [], section: '', tags: '', compareGroup: '', compareRole: '', excludeExport: false, previewUrl: '', thumbUrl: '',
         sourceFormat: item.sourceFormat || '', sourceBytes: Number(item.sourceBytes || 0), decoder: item.decoder || '',
         sourceDimensions: item.sourceDimensions || '', normalizedAt: item.normalizedAt || '', privacy: item.privacy || { hasExif: false, hasGps: false },
         capturedAt: item.capturedAt || '', captureSource: item.captureSource || '', sourceFolder: item.sourceFolder || '', importOrder: nextImportOrder(),
@@ -2720,6 +2831,7 @@
     const skippedText = skipped.length ? `；另略過 ${skipped.length} 項（${skipped.slice(0, 2).join('；')}${skipped.length > 2 ? '…' : ''}）` : '';
     const stoppedText = stopped ? '；使用者已停止後續匯入' : '';
     setStatus(`已加入 ${accepted.length} 張，目前共 ${state.items.length} 張${heicText}${folderText}${skippedText}${stoppedText}。`, skipped.length ? 'err' : 'ok');
+    renderLargeProjectMonitor();
     scheduleAutosave();
     if (state.autosaveEnabled) await saveAutosaveNow();
   }
@@ -2799,6 +2911,49 @@
     });
     showSelected(); refreshListSelectionState();
     setStatus(`已旋轉 ${items.length} 張照片。`, 'ok'); scheduleAutosave();
+  }
+
+  function applyBatchSection() {
+    const items = getBatchSelectedItems();
+    if (!items.length) return setStatus('請先在左側勾選照片。', 'err');
+    const value = String($('batchSectionName')?.value || '').trim().slice(0, MAX_META_TEXT_CHARS);
+    items.forEach((item) => { item.section = value; refreshPhotoListRow(item.id); });
+    showSelected();
+    setStatus(`已將章節／分類套用到 ${items.length} 張照片。`, 'ok');
+    scheduleAutosave();
+  }
+
+  function setSelectedExportExclusion(excluded) {
+    const items = getBatchSelectedItems();
+    if (!items.length) return setStatus('請先在左側勾選照片。', 'err');
+    items.forEach((item) => { item.excludeExport = Boolean(excluded); refreshPhotoListRow(item.id); });
+    renderList(); showSelected(); renderExportScopeStatus();
+    setStatus(`${excluded ? '已排除' : '已恢復'} ${items.length} 張照片的 Word / PDF 輸出。`, 'ok');
+    scheduleAutosave();
+  }
+
+  function setCurrentExportExclusion(value) {
+    if (state.selected < 0 || !state.items[state.selected]) return;
+    const item = state.items[state.selected];
+    item.excludeExport = Boolean(value);
+    refreshPhotoListRow(item.id);
+    if (($('photoFilterMode')?.value || 'all') === 'excluded') renderList();
+    renderExportScopeStatus(); renderDashboard();
+    scheduleAutosave();
+  }
+
+  async function retryFailedImports() {
+    if (!state.failedImports.length || state.importRunning) return;
+    const retry = state.failedImports.map((entry) => ({ file: entry.file, relativePath: entry.relativePath || '' }));
+    setStatus(`正在重試 ${retry.length} 張失敗照片…`);
+    await addFiles(retry, { retry: true });
+  }
+
+  function clearImportSummary() {
+    state.failedImports = [];
+    state.lastImportSummary = null;
+    state.importProgress = { active: false, total: 0, completed: 0, heicTotal: 0, heicDone: 0, failed: 0 };
+    renderLargeProjectMonitor();
   }
 
   function openCrop() {
@@ -2918,7 +3073,7 @@
         crop: clampCrop(item.crop), annotations: sanitizeAnnotations(item.annotations), source_format: item.sourceFormat || '', source_bytes: Number(item.sourceBytes || 0),
         decoder: item.decoder || '', source_dimensions: item.sourceDimensions || '', normalized_at: item.normalizedAt || '', privacy: item.privacy || { hasExif: false, hasGps: false },
         captured_at: item.capturedAt || '', capture_source: item.captureSource || '', source_folder: item.sourceFolder || '', import_order: Number(item.importOrder || 0),
-        section: item.section || '', tags: item.tags || '', compare_group: item.compareGroup || '', compare_role: item.compareRole || '',
+        section: item.section || '', tags: item.tags || '', compare_group: item.compareGroup || '', compare_role: item.compareRole || '', exclude_export: Boolean(item.excludeExport),
       })),
       logo: state.logo ? { name: state.logo.name, blob: state.logo.blob } : null,
       saved_at: new Date().toISOString(),
@@ -2935,7 +3090,7 @@
         id: item.id, display_name: item.displayName, description: item.description || '',
         note: item.note || '', location: item.location || '', rotation: item.rotation || 0, crop: clampCrop(item.crop), annotations: sanitizeAnnotations(item.annotations),
         captured_at: item.capturedAt || '', capture_source: item.captureSource || '', source_folder: item.sourceFolder || '', import_order: Number(item.importOrder || 0),
-        section: item.section || '', tags: item.tags || '', compare_group: item.compareGroup || '', compare_role: item.compareRole || '',
+        section: item.section || '', tags: item.tags || '', compare_group: item.compareGroup || '', compare_role: item.compareRole || '', exclude_export: Boolean(item.excludeExport),
       })),
     };
   }
@@ -2987,7 +3142,7 @@
     if (!data) return '';
     return JSON.stringify({
       meta: data.meta || {}, quick_notes: data.quick_notes || [], selected: data.selected, selected_ids: data.selected_ids || [],
-      photos: (data.photos || []).map((p) => ({ id: p.id, display_name: p.display_name || p.displayName || '', description: p.description || '', note: p.note || '', location: p.location || '', rotation: Number(p.rotation || 0), crop: clampCrop(p.crop), annotations: sanitizeAnnotations(p.annotations), captured_at: p.captured_at || '', source_folder: p.source_folder || '', import_order: Number(p.import_order || 0), section: p.section || '', tags: p.tags || '', compare_group: p.compare_group || '', compare_role: p.compare_role || '' })),
+      photos: (data.photos || []).map((p) => ({ id: p.id, display_name: p.display_name || p.displayName || '', description: p.description || '', note: p.note || '', location: p.location || '', rotation: Number(p.rotation || 0), crop: clampCrop(p.crop), annotations: sanitizeAnnotations(p.annotations), captured_at: p.captured_at || '', source_folder: p.source_folder || '', import_order: Number(p.import_order || 0), section: p.section || '', tags: p.tags || '', compare_group: p.compare_group || '', compare_role: p.compare_role || '', exclude_export: Boolean(p.exclude_export) })),
     });
   }
 
@@ -3162,6 +3317,7 @@
     state.restoring = true;
     try {
       revokeStateUrls();
+      state.failedImports = []; state.lastImportSummary = null; state.importProgress = { active: false, total: 0, completed: 0, heicTotal: 0, heicDone: 0, failed: 0 };
       state.items = [];
       state.selectedIds.clear();
       const photos = data.photos || [];
@@ -3179,13 +3335,14 @@
           privacy: isPlainObject(photo.privacy) ? { hasExif: Boolean(photo.privacy.hasExif), hasGps: Boolean(photo.privacy.hasGps) } : { hasExif: false, hasGps: false },
           capturedAt: String(photo.captured_at || photo.capturedAt || ''), captureSource: String(photo.capture_source || photo.captureSource || ''),
           sourceFolder: String(photo.source_folder || photo.sourceFolder || ''), importOrder: Number(photo.import_order || photo.importOrder || state.items.length + 1),
-          section: String(photo.section || ''), tags: String(photo.tags || ''), compareGroup: String(photo.compare_group || photo.compareGroup || ''), compareRole: ['before','after'].includes(photo.compare_role || photo.compareRole) ? String(photo.compare_role || photo.compareRole) : '',
+          section: String(photo.section || ''), tags: String(photo.tags || ''), compareGroup: String(photo.compare_group || photo.compareGroup || ''), compareRole: ['before','after'].includes(photo.compare_role || photo.compareRole) ? String(photo.compare_role || photo.compareRole) : '', excludeExport: Boolean(photo.exclude_export ?? photo.excludeExport),
         });
       }
       state.importSequence = state.items.reduce((max, item) => Math.max(max, Number(item.importOrder || 0)), 0);
       state.lastHealthResult = null;
       if ($('sortMode')) $('sortMode').value = 'manual';
       if ($('photoFilter')) $('photoFilter').value = '';
+      if ($('photoFilterMode')) $('photoFilterMode').value = 'all';
       state.quickNotes = Array.isArray(data.quick_notes) && data.quick_notes.length ? [...data.quick_notes] : state.quickNotes;
       const meta = data.meta || {};
       $('orgName').value = meta.org_name || '';
@@ -3200,6 +3357,7 @@
       if ($('watermarkEnabled')) $('watermarkEnabled').checked = Boolean(meta.watermark_enabled);
       if ($('watermarkText')) $('watermarkText').value = meta.watermark_text || '';
       if ($('smartLongSplit')) $('smartLongSplit').checked = meta.smart_long_split !== false;
+      if ($('exportScope')) $('exportScope').value = ['included','selected'].includes(meta.export_scope) ? meta.export_scope : 'included';
       state.caseArchived = Boolean(meta.archived);
       state.caseArchivedAt = meta.archived_at || '';
       if (state.logo?.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(state.logo.previewUrl);
@@ -3279,7 +3437,7 @@
           source_format: item.sourceFormat || '', source_bytes: Number(item.sourceBytes || 0), decoder: item.decoder || '',
           source_dimensions: item.sourceDimensions || '', normalized_at: item.normalizedAt || '', privacy: item.privacy || { hasExif: false, hasGps: false },
         captured_at: item.capturedAt || '', capture_source: item.captureSource || '', source_folder: item.sourceFolder || '', import_order: Number(item.importOrder || 0),
-        section: item.section || '', tags: item.tags || '', compare_group: item.compareGroup || '', compare_role: item.compareRole || '',
+        section: item.section || '', tags: item.tags || '', compare_group: item.compareGroup || '', compare_role: item.compareRole || '', exclude_export: Boolean(item.excludeExport),
         });
       }
       if (state.logo) {
@@ -3419,6 +3577,7 @@
     for (const [key, label] of [['org_name','機關名稱'],['title','文件標題'],['case','案件／主題'],['case_no','案件編號'],['date','紀錄日期'],['location','地點'],['watermark_text','浮水印']]) assertProjectString(meta[key], label, MAX_META_TEXT_CHARS);
     if (meta.archived_at !== undefined) assertProjectString(meta.archived_at, '封存時間', 64, { optional: true });
     if (meta.per_page !== undefined && (typeof meta.per_page !== 'number' || ![1, 2, 4].includes(meta.per_page))) throw new Error('per_page 必須是數字 1、2 或 4。');
+    if (meta.export_scope !== undefined && !['included','selected'].includes(meta.export_scope)) throw new Error('export_scope 不合法。');
     for (const key of ['cover', 'page_numbers', 'watermark_enabled', 'smart_long_split', 'archived']) if (meta[key] !== undefined && typeof meta[key] !== 'boolean') throw new Error(`${key} 必須是布林值。`);
 
     if (raw.quick_notes !== undefined) {
@@ -3462,6 +3621,7 @@
       if (photo.source_folder !== undefined) assertProjectString(photo.source_folder, `photos[${index}].source_folder`, MAX_META_TEXT_CHARS, { optional: true });
       for (const [key, max] of [['section', MAX_META_TEXT_CHARS], ['tags', MAX_META_TEXT_CHARS], ['compare_group', MAX_META_TEXT_CHARS], ['compare_role', 16]]) if (photo[key] !== undefined) assertProjectString(photo[key], `photos[${index}].${key}`, max, { optional: true });
       if (photo.compare_role && !['before','after'].includes(photo.compare_role)) throw new Error(`photos[${index}].compare_role 不合法。`);
+      if (photo.exclude_export !== undefined && typeof photo.exclude_export !== 'boolean') throw new Error(`photos[${index}].exclude_export 不合法。`);
       if (photo.import_order !== undefined && (!Number.isInteger(Number(photo.import_order)) || Number(photo.import_order) < 0 || Number(photo.import_order) > 10000000)) throw new Error(`photos[${index}].import_order 不合法。`);
       if (photo.privacy !== undefined) {
         if (!isPlainObject(photo.privacy)) throw new Error(`photos[${index}].privacy 必須是物件。`);
@@ -3606,7 +3766,7 @@
           source_format: p.source_format || '', source_bytes: Number(p.source_bytes || 0), decoder: p.decoder || '',
           source_dimensions: p.source_dimensions || '', normalized_at: p.normalized_at || '', privacy: p.privacy || { hasExif: false, hasGps: false },
         captured_at: p.captured_at || '', capture_source: p.capture_source || '', source_folder: p.source_folder || '', import_order: Number(p.import_order || 0),
-        section: p.section || '', tags: p.tags || '', compare_group: p.compare_group || '', compare_role: p.compare_role || '',
+        section: p.section || '', tags: p.tags || '', compare_group: p.compare_group || '', compare_role: p.compare_role || '', exclude_export: Boolean(p.exclude_export),
         });
       }
       let logo = null;
@@ -3852,10 +4012,10 @@
   async function renderExactPreview() {
     const modal = $('previewModal');
     const pages = $('previewPages');
-    if (!state.items.length) {
-      pages.innerHTML = '<div class="status err">請先加入至少一張照片，再產生列印版面預覽。</div>';
+    if (!exportCandidateIndices().length) {
+      pages.innerHTML = '<div class="status err">目前輸出範圍沒有可輸出的照片。</div>';
       modal.classList.add('show');
-      setStatus('請先加入至少一張照片。', 'err');
+      setStatus('目前輸出範圍沒有可輸出的照片。', 'err');
       return;
     }
     // Preview uses the Canvas/PDF layout engine only; it must not depend on JSZip.
@@ -3889,8 +4049,8 @@
   }
 
   async function downloadPdfFromPreview() {
-    if (!state.items.length) {
-      setStatus('請先加入至少一張照片。', 'err');
+    if (!exportCandidateIndices().length) {
+      setStatus('目前輸出範圍沒有可輸出的照片。', 'err');
       return;
     }
     $('previewModal').classList.remove('show');
@@ -4200,7 +4360,7 @@
   }
 
   async function exportWord() {
-    if (!state.items.length) return;
+    if (!exportCandidateIndices().length) return setStatus('目前輸出範圍沒有可輸出的照片。', 'err');
     if (!librariesReady()) return setStatus('JSZip 元件尚未載入，請重新整理。', 'err');
     showLoading('正在建立 Word 文件…');
     try {
@@ -4213,7 +4373,7 @@
   }
 
   async function exportPdf() {
-    if (!state.items.length) return;
+    if (!exportCandidateIndices().length) return setStatus('目前輸出範圍沒有可輸出的照片。', 'err');
     showLoading('正在建立 PDF…', 'V3.2 使用內建 Canvas + PDF Writer，不需 jsPDF。');
     try {
       const blob = await generatePdfBlob();
@@ -4224,7 +4384,7 @@
   }
 
   async function exportBoth() {
-    if (!state.items.length) return;
+    if (!exportCandidateIndices().length) return setStatus('目前輸出範圍沒有可輸出的照片。', 'err');
     if (!librariesReady()) return setStatus('JSZip 元件尚未載入，請重新整理。', 'err');
     showLoading('正在建立 Word + PDF…', 'V3.2 會依序產生，降低瀏覽器記憶體尖峰。');
     try {
@@ -4273,7 +4433,10 @@
     state.importSequence = 0;
     state.lastHealthResult = null;
     if ($('photoFilter')) $('photoFilter').value = '';
+    if ($('photoFilterMode')) $('photoFilterMode').value = 'all';
+    if ($('exportScope')) $('exportScope').value = 'included';
     if ($('sortMode')) $('sortMode').value = 'manual';
+    clearImportSummary();
     state.quickNotes = ['設備外觀', '設備序號', '安裝位置', '功能測試', '施工前', '施工後', '驗收情形正常'];
     $('orgName').value = '';
     $('title').value = '照片紀錄表';
@@ -4322,9 +4485,12 @@
     });
     $('sortMode').addEventListener('change', () => sortPhotos($('sortMode').value));
     $('photoFilter').addEventListener('input', renderList);
+    $('photoFilterMode')?.addEventListener('change', renderList);
+    $('retryFailedImportsBtn')?.addEventListener('click', retryFailedImports);
+    $('clearImportSummaryBtn')?.addEventListener('click', clearImportSummary);
 
-    $('selectAllBtn').addEventListener('click', () => { state.items.forEach((item) => state.selectedIds.add(item.id)); refreshListSelectionState(); });
-    $('clearSelectionBtn').addEventListener('click', () => { state.selectedIds.clear(); refreshListSelectionState(); });
+    $('selectAllBtn').addEventListener('click', () => { state.items.forEach((item) => state.selectedIds.add(item.id)); if (($('photoFilterMode')?.value || 'all') === 'selected') renderList(); else refreshListSelectionState(); });
+    $('clearSelectionBtn').addEventListener('click', () => { state.selectedIds.clear(); if (($('photoFilterMode')?.value || 'all') === 'selected') renderList(); else refreshListSelectionState(); });
     $('upBtn').addEventListener('click', () => moveSelected(-1));
     $('downBtn').addEventListener('click', () => moveSelected(1));
     $('prevPhotoBtn').addEventListener('click', () => navigatePhoto(-1));
@@ -4343,7 +4509,10 @@
       if (state.items.length && !confirm('確定要清除目前所有照片與編輯內容嗎？')) return;
       revokeStateUrls(); state.items = []; state.selected = -1; state.selectedIds.clear(); state.logo = null; state.importSequence = 0; state.lastHealthResult = null;
       if ($('photoFilter')) $('photoFilter').value = '';
+      if ($('photoFilterMode')) $('photoFilterMode').value = 'all';
+      if ($('exportScope')) $('exportScope').value = 'included';
       if ($('sortMode')) $('sortMode').value = 'manual';
+      clearImportSummary();
       renderLogo(); renderList(); showSelected(); await clearAutosave();
       setStatus('照片與自動儲存資料已清除。');
     });
@@ -4383,6 +4552,9 @@
     $('batchRotateRightBtn').addEventListener('click', () => batchRotate(90));
     $('applyBatchDescBtn').addEventListener('click', applyBatchDescription);
     $('applyBatchLocationBtn').addEventListener('click', applyBatchLocation);
+    $('applyBatchSectionBtn')?.addEventListener('click', applyBatchSection);
+    $('excludeSelectedBtn')?.addEventListener('click', () => setSelectedExportExclusion(true));
+    $('includeSelectedBtn')?.addEventListener('click', () => setSelectedExportExclusion(false));
 
     $('description').addEventListener('input', () => {
       if (state.selected >= 0) { state.items[state.selected].description = $('description').value; scheduleAutosave(); }
@@ -4429,6 +4601,8 @@
     ['caseNumber','watermarkText'].forEach((id) => $(id)?.addEventListener('input', scheduleAutosave));
     $('watermarkEnabled')?.addEventListener('change', scheduleAutosave);
     $('smartLongSplit')?.addEventListener('change', scheduleAutosave);
+    $('excludeFromExport')?.addEventListener('change', () => setCurrentExportExclusion($('excludeFromExport').checked));
+    $('exportScope')?.addEventListener('change', () => { renderExportScopeStatus(); scheduleAutosave(); });
     $('archiveProjectBtn')?.addEventListener('click', toggleArchiveProject);
     $('annotationBtn').addEventListener('click', openAnnotationEditor);
     $('closeAnnotationBtn').addEventListener('click', closeAnnotationEditor);
@@ -4627,7 +4801,8 @@
     $('autosaveEnabled').checked = state.autosaveEnabled;
     renderAutosaveHealth();
     loadCaseTemplates();
-    bindEvents(); renderQuickNotes(); renderLogo(); renderMemoryMode(); renderList(); showSelected();
+    bindEvents(); renderQuickNotes(); renderLogo(); renderMemoryMode(); renderList(); showSelected(); renderLargeProjectMonitor();
+    setInterval(() => { if (!document.hidden) renderLargeProjectMonitor(); }, 5000);
     if (!librariesReady()) setStatus('JSZip 元件未載入；請確認 vendor/jszip.min.js 是否存在後重新整理。');
     if (state.autosaveEnabled) {
       let autosave = await readAutosave();
