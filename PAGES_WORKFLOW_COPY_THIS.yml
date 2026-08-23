@@ -1,0 +1,95 @@
+name: Deploy GitHub Pages - V3.7 Clean
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Validate and build Pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install pinned runtime dependencies
+        run: npm install --omit=dev --ignore-scripts --no-audit --no-fund
+
+      - name: JavaScript syntax check
+        run: |
+          node --check app.js
+          node --check heic-worker.js
+          node --check image-worker.js
+
+      - name: Build Pages artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _site
+          mkdir -p _site/vendor/heic-to
+
+          cp index.html _site/
+          cp app.js _site/
+          cp style.css _site/
+          cp heic-worker.js _site/
+          cp image-worker.js _site/
+          cp LICENSES_THIRD_PARTY.md _site/
+
+          cp node_modules/jszip/dist/jszip.min.js _site/vendor/jszip.min.js
+          cp node_modules/heic-to/dist/next/heic-to.js _site/vendor/heic-to/heic-to-worker.js
+          cp node_modules/heic-to/LICENSE _site/vendor/heic-to/LICENSE
+
+          test -s _site/index.html
+          test -s _site/app.js
+          test -s _site/style.css
+          test -s _site/heic-worker.js
+          test -s _site/image-worker.js
+          test -s _site/vendor/jszip.min.js
+          test -s _site/vendor/heic-to/heic-to-worker.js
+
+          grep -q "V3.7" _site/index.html
+          grep -q "APP_VERSION = 'V3.7'" _site/app.js
+
+          echo "V3.7 Pages artifact ready."
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy Pages
+    needs: build
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
