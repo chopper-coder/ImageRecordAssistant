@@ -123,3 +123,7 @@ main{display:grid;grid-template-columns:minmax(270px,30%) minmax(360px,1fr) minm
   .photo-selection-count{grid-column:1/-1;margin-left:0;text-align:right}
   .photo-panel #photoList{min-height:280px;max-height:52vh}
 }
+
+/* V3.5.2 GitHub Pages preview hotfix */
+.preview-modal-actions{margin-left:auto;justify-content:flex-end;flex-wrap:wrap}
+@media(max-width:720px){.preview-modal-actions{width:100%;margin-left:0}.preview-modal-actions .btn{flex:1;min-width:92px}.modal-head{align-items:flex-start;flex-wrap:wrap}}

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; worker-src 'self' blob:">
-  <title>圖片紀錄整理助手 V3.5.1｜Photo List Accessibility Hotfix</title>
+  <title>圖片紀錄整理助手 V3.5.2｜GitHub Pages Preview Hotfix</title>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
@@ -15,8 +15,8 @@
     <p>專業工作流程｜資料夾匯入｜時間軸排序｜相似照片偵測｜品質檢查</p>
   </div>
   <div class="head-actions">
-    <span class="badge">V3.5.1</span><span class="dirty-badge" id="dirtyBadge" hidden>● 尚未另存</span>
-    <button class="headbtn" id="previewBtn" type="button">列印版面預覽</button>
+    <span class="badge">V3.5.2</span><span class="dirty-badge" id="dirtyBadge" hidden>● 尚未另存</span>
+    <button class="headbtn" id="previewBtn" type="button" title="依目前設定產生實際 PDF 版面預覽">👁 列印版面預覽</button>
   </div>
 </header>
 
@@ -167,7 +167,7 @@
 
 <div class="modal" id="previewModal">
   <div class="modal-card">
-    <div class="modal-head"><div><strong>精準列印版面預覽</strong><div class="tiny">PDF 與這裡共用同一套 Canvas 排版引擎；頁碼也會依目前勾選狀態顯示。</div></div><button class="btn" id="closePreviewBtn" type="button">關閉</button></div>
+    <div class="modal-head"><div><strong>精準列印版面預覽</strong><div class="tiny">PDF 與這裡共用同一套 Canvas 排版引擎；頁碼也會依目前勾選狀態顯示。</div></div><div class="toolbar preview-modal-actions"><button class="btn" id="refreshPreviewBtn" type="button">重新產生</button><button class="btn primary" id="previewPdfBtn" type="button">下載 PDF</button><button class="btn" id="closePreviewBtn" type="button">關閉</button></div></div>
     <div class="modal-body" id="previewPages"><div class="tiny">尚未產生預覽。</div></div>
   </div>
 </div>

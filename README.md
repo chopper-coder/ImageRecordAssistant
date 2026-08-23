@@ -1,4 +1,4 @@
-# 圖片紀錄整理助手 V3.5.1
+# 圖片紀錄整理助手 V3.5.2
 
 Professional Workflow Edition / Photo List Accessibility Hotfix
 
@@ -16,6 +16,7 @@ Professional Workflow Edition / Photo List Accessibility Hotfix
 - Word／PDF 匯出
 - HEIC/HEIF 安全隔離解碼
 - V3.5.1 左側照片清單可用性修正
+- V3.5.2 GitHub Pages 列印版面預覽 Hotfix：移除不必要的 JSZip 前置依賴，加入明確錯誤提示、重新產生與直接下載 PDF
 
 ## 部署到 GitHub Pages
 

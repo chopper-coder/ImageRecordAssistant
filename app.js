@@ -7,7 +7,7 @@
   }
 
   const APP_NAME = '圖片紀錄整理助手';
-  const APP_VERSION = 'V3.5.1';
+  const APP_VERSION = 'V3.5.2';
   const PHOTOJOB_SCHEMA_VERSION = 2;
   const HISTORY_LIMIT = 30;
   const SUPPORTED_RE = /\.(jpe?g|png|webp|bmp|heic|heif)$/i;
@@ -1113,7 +1113,7 @@
       try {
         jpegBlob = await decodeHeicWithWorker(file, label);
       } catch (error) {
-        if (/Failed to fetch|module|404|載入|Worker/i.test(String(error?.message || ''))) throw new Error('此瀏覽器無法原生讀取 HEIC，且本機 HEIC 解碼元件不存在或無法載入。請使用完整 V3.5.1 離線建置版。');
+        if (/Failed to fetch|module|404|載入|Worker/i.test(String(error?.message || ''))) throw new Error('此瀏覽器無法原生讀取 HEIC，且本機 HEIC 解碼元件不存在或無法載入。請使用完整 V3.5.2 離線建置版。');
         throw new Error(`${label} HEIC/HEIF 轉換失敗：${error.message || '解碼器無法處理此檔案'}`);
       }
     }
@@ -2887,11 +2887,18 @@
   }
 
   async function renderExactPreview() {
-    if (!state.items.length) return;
-    if (!librariesReady()) { setStatus('JSZip 元件尚未載入，請重新整理。', 'err'); return; }
+    const modal = $('previewModal');
+    const pages = $('previewPages');
+    if (!state.items.length) {
+      pages.innerHTML = '<div class="status err">請先加入至少一張照片，再產生列印版面預覽。</div>';
+      modal.classList.add('show');
+      setStatus('請先加入至少一張照片。', 'err');
+      return;
+    }
+    // Preview uses the Canvas/PDF layout engine only; it must not depend on JSZip.
     state.previewUrls.forEach((url) => URL.revokeObjectURL(url)); state.previewUrls = [];
-    $('previewPages').innerHTML = '<div class="tiny">正在依實際 PDF 排版產生預覽…</div>';
-    $('previewModal').classList.add('show');
+    pages.innerHTML = '<div class="tiny">正在依實際 PDF 排版產生預覽…</div>';
+    modal.classList.add('show');
     showLoading('正在產生列印版面預覽…');
     try {
       const meta = metaPayload();
@@ -2916,6 +2923,15 @@
       $('previewPages').innerHTML = `<div class="status err">預覽失敗：${escapeHtml(error.message)}</div>`;
       setStatus(`預覽失敗：${error.message}`, 'err');
     } finally { hideLoading(); }
+  }
+
+  async function downloadPdfFromPreview() {
+    if (!state.items.length) {
+      setStatus('請先加入至少一張照片。', 'err');
+      return;
+    }
+    $('previewModal').classList.remove('show');
+    await guardedExport(exportPdf);
   }
 
   function asciiBytes(text) { return new TextEncoder().encode(text); }
@@ -3501,6 +3517,8 @@
     $('safeExitBtn').addEventListener('click', safeSharedComputerExit);
 
     $('previewBtn').addEventListener('click', renderExactPreview);
+    $('refreshPreviewBtn').addEventListener('click', renderExactPreview);
+    $('previewPdfBtn').addEventListener('click', downloadPdfFromPreview);
     const closePreview = () => {
       $('previewModal').classList.remove('show');
       state.previewUrls.forEach((url) => URL.revokeObjectURL(url)); state.previewUrls = [];
