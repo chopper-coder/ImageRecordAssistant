@@ -13,7 +13,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: pages
   cancel-in-progress: true
 
 jobs:
@@ -44,8 +44,8 @@ jobs:
       - name: Build GitHub Pages site
         shell: bash
         run: |
+          set -euo pipefail
           rm -rf _site
-
           mkdir -p _site/vendor/heic-to
 
           cp index.html _site/
@@ -53,23 +53,31 @@ jobs:
           cp style.css _site/
           cp heic-worker.js _site/
           cp image-worker.js _site/
-          cp .nojekyll _site/
-          cp LICENSES_THIRD_PARTY.md _site/
 
-          cp node_modules/jszip/dist/jszip.min.js \
-             _site/vendor/jszip.min.js
+          # GitHub Pages does not require this file to already exist in the repo.
+          # Create it directly in the deployment artifact so Jekyll is bypassed.
+          touch _site/.nojekyll
 
-          cp node_modules/heic-to/dist/next/heic-to.js \
-             _site/vendor/heic-to/heic-to-worker.js
+          # Copy optional documentation only when present.
+          if [ -f LICENSES_THIRD_PARTY.md ]; then
+            cp LICENSES_THIRD_PARTY.md _site/
+          fi
 
-          cp node_modules/heic-to/LICENSE \
-             _site/vendor/heic-to/LICENSE
+          cp node_modules/jszip/dist/jszip.min.js _site/vendor/jszip.min.js
+          cp node_modules/heic-to/dist/next/heic-to.js _site/vendor/heic-to/heic-to-worker.js
+          cp node_modules/heic-to/LICENSE _site/vendor/heic-to/LICENSE
 
           test -s _site/index.html
           test -s _site/app.js
           test -s _site/style.css
+          test -s _site/heic-worker.js
+          test -s _site/image-worker.js
           test -s _site/vendor/jszip.min.js
           test -s _site/vendor/heic-to/heic-to-worker.js
+          test -f _site/.nojekyll
+
+          grep -q "V3.7" _site/index.html
+          grep -q "APP_VERSION = 'V3.7'" _site/app.js
 
           echo "V3.7 Pages build completed."
 
@@ -77,7 +85,7 @@ jobs:
         uses: actions/configure-pages@v6
 
       - name: Upload GitHub Pages artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
