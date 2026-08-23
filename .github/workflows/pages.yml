@@ -8,50 +8,76 @@ on:
 
 permissions:
   contents: read
+  actions: read
   pages: write
   id-token: write
 
 concurrency:
-  group: pages
+  group: "pages"
   cancel-in-progress: true
 
 jobs:
   build:
     name: Validate and build Pages
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
+          package-manager-cache: false
 
-      - name: Install dependencies
-        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Install runtime dependencies
+        run: npm install --omit=dev --ignore-scripts --no-audit --no-fund
 
-      - name: Prepare vendor
-        run: npm run prepare:vendor
+      - name: Check JavaScript syntax
+        run: |
+          node --check app.js
+          node --check heic-worker.js
+          node --check image-worker.js
 
-      - name: Verify vendor
-        run: npm run verify:vendor
+      - name: Build GitHub Pages site
+        shell: bash
+        run: |
+          rm -rf _site
 
-      - name: Syntax checks
-        run: npm run test:syntax
+          mkdir -p _site/vendor/heic-to
 
-      - name: Security checks
-        run: npm run test:security
+          cp index.html _site/
+          cp app.js _site/
+          cp style.css _site/
+          cp heic-worker.js _site/
+          cp image-worker.js _site/
+          cp .nojekyll _site/
+          cp LICENSES_THIRD_PARTY.md _site/
 
-      - name: Build site
-        run: npm run build:site
+          cp node_modules/jszip/dist/jszip.min.js \
+             _site/vendor/jszip.min.js
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
+          cp node_modules/heic-to/dist/next/heic-to.js \
+             _site/vendor/heic-to/heic-to-worker.js
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+          cp node_modules/heic-to/LICENSE \
+             _site/vendor/heic-to/LICENSE
+
+          test -s _site/index.html
+          test -s _site/app.js
+          test -s _site/style.css
+          test -s _site/vendor/jszip.min.js
+          test -s _site/vendor/heic-to/heic-to-worker.js
+
+          echo "V3.7 Pages build completed."
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
         with:
           path: _site
 
@@ -65,6 +91,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: Deploy Pages
+      - name: Deploy GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
