@@ -1,4 +1,4 @@
-name: Deploy GitHub Pages - V3.7
+name: Deploy GitHub Pages - V3.7.2
 
 on:
   push:
@@ -32,16 +32,16 @@ jobs:
           node-version: "24"
           package-manager-cache: false
 
-      - name: Install runtime dependencies
+      - name: Install pinned runtime dependencies
         run: npm install --omit=dev --ignore-scripts --no-audit --no-fund
 
-      - name: Check JavaScript syntax
+      - name: JavaScript syntax check
         run: |
           node --check app.js
           node --check heic-worker.js
           node --check image-worker.js
 
-      - name: Build GitHub Pages site
+      - name: Build Pages artifact
         shell: bash
         run: |
           set -euo pipefail
@@ -53,15 +53,8 @@ jobs:
           cp style.css _site/
           cp heic-worker.js _site/
           cp image-worker.js _site/
-
-          # GitHub Pages does not require this file to already exist in the repo.
-          # Create it directly in the deployment artifact so Jekyll is bypassed.
+          if [ -f LICENSES_THIRD_PARTY.md ]; then cp LICENSES_THIRD_PARTY.md _site/; fi
           touch _site/.nojekyll
-
-          # Copy optional documentation only when present.
-          if [ -f LICENSES_THIRD_PARTY.md ]; then
-            cp LICENSES_THIRD_PARTY.md _site/
-          fi
 
           cp node_modules/jszip/dist/jszip.min.js _site/vendor/jszip.min.js
           cp node_modules/heic-to/dist/next/heic-to.js _site/vendor/heic-to/heic-to-worker.js
@@ -76,10 +69,10 @@ jobs:
           test -s _site/vendor/heic-to/heic-to-worker.js
           test -f _site/.nojekyll
 
-          grep -q "V3.7" _site/index.html
-          grep -q "APP_VERSION = 'V3.7'" _site/app.js
+          grep -q "圖片紀錄整理助手" _site/index.html
+          grep -q "const APP_VERSION" _site/app.js
 
-          echo "V3.7 Pages build completed."
+          echo "Pages artifact ready."
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6
