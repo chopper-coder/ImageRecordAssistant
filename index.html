@@ -5,17 +5,17 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; worker-src 'self' blob:">
-  <title>圖片紀錄整理助手 V3.5.2｜GitHub Pages Preview Hotfix</title>
+  <title>圖片紀錄整理助手 V3.5.3｜Cat Cute UI Edition</title>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
 <header>
   <div>
-    <h1>圖片紀錄整理助手</h1>
-    <p>專業工作流程｜資料夾匯入｜時間軸排序｜相似照片偵測｜品質檢查</p>
+    <h1>圖片紀錄整理助手 🐾</h1>
+    <p>可愛貓貓風格｜專業工作流程｜資料夾匯入｜時間軸排序｜相似照片偵測</p>
   </div>
   <div class="head-actions">
-    <span class="badge">V3.5.2</span><span class="dirty-badge" id="dirtyBadge" hidden>● 尚未另存</span>
+    <span class="badge">V3.5.3</span><span class="dirty-badge" id="dirtyBadge" hidden>● 尚未另存</span>
     <button class="headbtn" id="previewBtn" type="button" title="依目前設定產生實際 PDF 版面預覽">👁 列印版面預覽</button>
   </div>
 </header>
@@ -104,10 +104,14 @@
 
   <section class="panel">
     <h2>文件資料與照片說明</h2>
-    <p class="sub">預設一頁兩張。頁碼可在最下方自行決定是否加入。</p>
-    <div class="form-scroll">
+    <p class="sub">右側重新排版成卡片式流程，搭配貓貓可愛風格，更容易一路完成設定。</p>
+    <div class="form-scroll cat-form-scroll">
+      <div class="right-top-note">🐈 右側改成卡片式排版：先填文件資料，再整理單張照片，最後批次處理與輸出。</div>
+
+      <section class="form-card cat-section">
+        <div class="section-head"><div class="section-emoji">🐾</div><div><h3>文件基本資料</h3><p>先設定整份文件的標題、日期、地點與範本。</p></div></div>
       <div class="field"><label for="orgName">機關／單位名稱（選填）</label><input id="orgName" maxlength="1000" placeholder="例如：○○消防局"></div>
-      <div class="field"><label>機關 LOGO（選填）</label><div class="logo-preview"><img id="logoPreview" alt="LOGO 預覽" hidden><div><button class="btn" id="logoBtn" type="button">選擇 LOGO</button> <button class="btn" id="removeLogoBtn" type="button">移除</button><input type="file" id="logoInput" accept="image/*,.heic,.heif,image/heic,image/heif" hidden><div class="tiny" id="logoName">尚未選擇</div></div></div></div>
+      <div class="field"><label>機關 LOGO（選填）</label><div class="logo-preview"><img id="logoPreview" alt="LOGO 預覽" hidden><div><button class="btn" id="logoBtn" type="button">🐾 選擇 LOGO</button> <button class="btn" id="removeLogoBtn" type="button">移除</button><input type="file" id="logoInput" accept="image/*,.heic,.heif,image/heic,image/heif" hidden><div class="tiny" id="logoName">尚未選擇</div></div></div></div>
       <div class="field"><label class="checkline"><input id="cover" type="checkbox">加入封面頁</label><div class="tiny">封面會顯示機關名稱、LOGO、文件標題、案件／主題、日期與地點。</div></div>
       <div class="field"><label for="title">文件標題</label><input id="title" maxlength="1000" value="照片紀錄表"></div>
       <div class="field"><label for="caseName">案件／主題</label><input id="caseName" maxlength="1000"></div>
@@ -121,8 +125,10 @@
         <div class="row-template"><select id="caseTemplateSelect"><option value="">請選擇範本</option></select><button class="btn" id="applyCaseTemplateBtn" type="button">套用</button></div>
         <div class="toolbar"><input id="caseTemplateName" maxlength="300" placeholder="範本名稱，例如：年度設備維護"><button class="btn" id="saveCaseTemplateBtn" type="button">儲存目前設定</button><button class="btn danger" id="deleteCaseTemplateBtn" type="button">刪除</button></div>
       </div>
+      </section>
 
-      <div class="sep"></div>
+      <section class="form-card cat-section">
+        <div class="section-head"><div class="section-emoji">🐱</div><div><h3>單張照片設定</h3><p>目前選取的照片資訊、檔名、旋轉、說明與備註都在這裡。</p></div></div>
       <div id="selectedName" class="selected-name">尚未選取照片</div>
       <div id="photoMeta" class="photo-meta">拍攝時間／來源資料夾：—</div>
       <div class="field"><label for="photoName">照片檔名（可重新命名）</label><input id="photoName" maxlength="260" placeholder="例如：現場照片_01.jpg"></div>
@@ -131,6 +137,10 @@
       <div class="toolbar"><button class="btn" id="batchRenameBtn" type="button">依序重新命名全部照片</button></div>
       <div class="field"><label>照片旋轉</label><div class="toolbar"><button class="btn" id="rotateLeftBtn" type="button">左轉 90°</button><button class="btn" id="rotateRightBtn" type="button">右轉 90°</button><span class="tiny" id="rotateLabel">目前：0°</span></div></div>
       <div class="field"><label for="photoLocation">照片地點（留白沿用文件地點）</label><input id="photoLocation" maxlength="1000" placeholder="例如：3樓機房"></div>
+      </section>
+
+      <section class="form-card cat-section">
+        <div class="section-head"><div class="section-emoji">😺</div><div><h3>批次操作與常用說明</h3><p>多選照片後，可一次套用說明、地點或旋轉設定。</p></div></div>
       <div class="batch-box">
         <div class="batch-title">多選批次操作 <span class="tiny">（使用左側勾選照片）</span></div>
         <div class="field"><label for="batchDescription">批次照片說明</label><textarea id="batchDescription" maxlength="50000" placeholder="輸入後套用到已勾選照片"></textarea></div>
@@ -142,12 +152,14 @@
       <div class="field"><label for="description">照片說明</label><textarea id="description" maxlength="50000" placeholder="請輸入這張照片的說明"></textarea></div>
       <div class="toolbar"><button class="btn" id="copyPrevDescBtn" type="button">複製上一張說明</button></div>
       <div class="field"><label for="note">備註（選填）</label><textarea id="note" maxlength="20000" placeholder="有需要再填寫"></textarea></div>
+      </section>
 
-      <div class="sep"></div>
+      <section class="form-card cat-section cat-export-section">
+        <div class="section-head"><div class="section-emoji">🐈‍⬛</div><div><h3>輸出、檢查與安全保存</h3><p>完成內容後，先檢查，再輸出 Word/PDF，並保護本機專案資料。</p></div></div>
       <div class="exports">
-        <button class="btn primary" id="wordBtn" type="button">輸出 Word</button>
-        <button class="btn primary" id="pdfBtn" type="button">輸出 PDF</button>
-        <button class="btn primary both" id="bothBtn" type="button">同時輸出 Word + PDF</button>
+        <button class="btn primary" id="wordBtn" type="button">🐾 輸出 Word</button>
+        <button class="btn primary" id="pdfBtn" type="button">🐾 輸出 PDF</button>
+        <button class="btn primary both" id="bothBtn" type="button">🐾 同時輸出 Word + PDF</button>
       </div>
       <div class="page-number-box">
         <label class="checkline"><input id="includePageNumber" type="checkbox">輸出時加入頁碼</label>
@@ -161,6 +173,7 @@
         <div class="tiny">自動儲存同時保留最多 5 代文字／版面復原紀錄。「清除本機專案資料」保留目前畫面；「共用電腦安全離開」會連目前照片、預覽網址與未另存變更一併清除。</div>
       </div>
       <div id="status" class="status">準備完成。所有照片與專案資料都在本機瀏覽器中處理。</div>
+      </section>
     </div>
   </section>
 </main>
