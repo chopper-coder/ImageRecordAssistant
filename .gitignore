@@ -2,6 +2,14 @@ node_modules/
 _site/
 test-output/
 playwright-report/
+coverage/
 *.log
+*.tmp
+*.bak
+*.swp
+.env
+.env.*
 .DS_Store
 Thumbs.db
+.vscode/
+.idea/

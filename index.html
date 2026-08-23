@@ -5,17 +5,17 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; worker-src 'self' blob:">
-  <title>圖片紀錄整理助手 V3.5.3｜Cat Cute UI Edition</title>
+  <title>圖片紀錄整理助手 V3.7｜Case Management & Advanced Annotation Edition</title>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
 <header>
   <div>
     <h1>圖片紀錄整理助手 🐾</h1>
-    <p>可愛貓貓風格｜專業工作流程｜資料夾匯入｜時間軸排序｜相似照片偵測</p>
+    <p>可愛貓貓風格｜案件管理｜進階照片註記｜個資遮蔽｜浮水印｜封存</p>
   </div>
   <div class="head-actions">
-    <span class="badge">V3.5.3</span><span class="dirty-badge" id="dirtyBadge" hidden>● 尚未另存</span>
+    <span class="badge">V3.7</span><span class="autosave-top-badge" id="autosaveTopBadge">💾 尚未自動儲存</span><span class="dirty-badge" id="dirtyBadge" hidden>● 尚未另存</span>
     <button class="headbtn" id="previewBtn" type="button" title="依目前設定產生實際 PDF 版面預覽">👁 列印版面預覽</button>
   </div>
 </header>
@@ -108,13 +108,14 @@
     <div class="form-scroll cat-form-scroll">
       <div class="right-top-note">🐈 右側改成卡片式排版：先填文件資料，再整理單張照片，最後批次處理與輸出。</div>
 
-      <section class="form-card cat-section">
-        <div class="section-head"><div class="section-emoji">🐾</div><div><h3>文件基本資料</h3><p>先設定整份文件的標題、日期、地點與範本。</p></div></div>
+      <details class="form-card cat-section smart-section" id="documentSection" open>
+        <summary class="section-head"><div class="section-emoji">🐾</div><div><h3>文件基本資料</h3><p>先設定整份文件的標題、日期、地點與範本。</p></div></summary>
       <div class="field"><label for="orgName">機關／單位名稱（選填）</label><input id="orgName" maxlength="1000" placeholder="例如：○○消防局"></div>
       <div class="field"><label>機關 LOGO（選填）</label><div class="logo-preview"><img id="logoPreview" alt="LOGO 預覽" hidden><div><button class="btn" id="logoBtn" type="button">🐾 選擇 LOGO</button> <button class="btn" id="removeLogoBtn" type="button">移除</button><input type="file" id="logoInput" accept="image/*,.heic,.heif,image/heic,image/heif" hidden><div class="tiny" id="logoName">尚未選擇</div></div></div></div>
       <div class="field"><label class="checkline"><input id="cover" type="checkbox">加入封面頁</label><div class="tiny">封面會顯示機關名稱、LOGO、文件標題、案件／主題、日期與地點。</div></div>
       <div class="field"><label for="title">文件標題</label><input id="title" maxlength="1000" value="照片紀錄表"></div>
       <div class="field"><label for="caseName">案件／主題</label><input id="caseName" maxlength="1000"></div>
+      <div class="field"><label for="caseNumber">案件編號（選填）</label><input id="caseNumber" maxlength="1000" placeholder="例如：1150823-001"></div>
       <div class="row2">
         <div class="field"><label for="recordDate">紀錄日期</label><input id="recordDate" type="date"></div>
         <div class="field"><label for="perPage">每頁照片數</label><select id="perPage"><option value="1">一頁 1 張</option><option value="2" selected>一頁 2 張（建議）</option><option value="4">一頁 4 張</option></select></div>
@@ -125,10 +126,10 @@
         <div class="row-template"><select id="caseTemplateSelect"><option value="">請選擇範本</option></select><button class="btn" id="applyCaseTemplateBtn" type="button">套用</button></div>
         <div class="toolbar"><input id="caseTemplateName" maxlength="300" placeholder="範本名稱，例如：年度設備維護"><button class="btn" id="saveCaseTemplateBtn" type="button">儲存目前設定</button><button class="btn danger" id="deleteCaseTemplateBtn" type="button">刪除</button></div>
       </div>
-      </section>
+      </details>
 
-      <section class="form-card cat-section">
-        <div class="section-head"><div class="section-emoji">🐱</div><div><h3>單張照片設定</h3><p>目前選取的照片資訊、檔名、旋轉、說明與備註都在這裡。</p></div></div>
+      <details class="form-card cat-section smart-section" id="singlePhotoSection">
+        <summary class="section-head"><div class="section-emoji">🐱</div><div><h3>單張照片設定</h3><p>選取照片後自動展開；檔名、旋轉、說明與備註都在這裡。</p></div></summary>
       <div id="selectedName" class="selected-name">尚未選取照片</div>
       <div id="photoMeta" class="photo-meta">拍攝時間／來源資料夾：—</div>
       <div class="field"><label for="photoName">照片檔名（可重新命名）</label><input id="photoName" maxlength="260" placeholder="例如：現場照片_01.jpg"></div>
@@ -137,10 +138,13 @@
       <div class="toolbar"><button class="btn" id="batchRenameBtn" type="button">依序重新命名全部照片</button></div>
       <div class="field"><label>照片旋轉</label><div class="toolbar"><button class="btn" id="rotateLeftBtn" type="button">左轉 90°</button><button class="btn" id="rotateRightBtn" type="button">右轉 90°</button><span class="tiny" id="rotateLabel">目前：0°</span></div></div>
       <div class="field"><label for="photoLocation">照片地點（留白沿用文件地點）</label><input id="photoLocation" maxlength="1000" placeholder="例如：3樓機房"></div>
-      </section>
+      <div class="row2"><div class="field"><label for="photoSection">照片章節／分類</label><input id="photoSection" maxlength="1000" placeholder="例如：施工前、功能測試"></div><div class="field"><label for="photoTags">標籤</label><input id="photoTags" maxlength="1000" placeholder="例如：設備,缺失,改善後"></div></div>
+      <div class="compare-box"><div class="batch-title">前後比較組</div><div class="row2"><div class="field"><label for="compareGroup">比較組名稱</label><input id="compareGroup" maxlength="1000" placeholder="例如：A區改善"></div><div class="field"><label for="compareRole">照片角色</label><select id="compareRole"><option value="">不指定</option><option value="before">改善前</option><option value="after">改善後</option></select></div></div><div class="tiny">同一組的「改善前／改善後」會在照片資訊與輸出文件中清楚標示；相鄰成對照片會優先維持同頁。</div></div>
+      <div class="annotation-entry"><button class="btn annotation-main-btn" id="annotationBtn" type="button">✏️ 照片註記／馬賽克</button><span class="tiny" id="annotationCount">尚無註記</span></div>
+      </details>
 
-      <section class="form-card cat-section">
-        <div class="section-head"><div class="section-emoji">😺</div><div><h3>批次操作與常用說明</h3><p>多選照片後，可一次套用說明、地點或旋轉設定。</p></div></div>
+      <details class="form-card cat-section smart-section" id="batchSection">
+        <summary class="section-head"><div class="section-emoji">😺</div><div><h3>批次操作與常用說明</h3><p>勾選 2 張以上時自動展開，批次設定不再一直占畫面。</p></div></summary>
       <div class="batch-box">
         <div class="batch-title">多選批次操作 <span class="tiny">（使用左側勾選照片）</span></div>
         <div class="field"><label for="batchDescription">批次照片說明</label><textarea id="batchDescription" maxlength="50000" placeholder="輸入後套用到已勾選照片"></textarea></div>
@@ -150,12 +154,18 @@
       </div>
       <div class="field"><label>常用說明</label><div class="quick-wrap" id="quickNotes"></div><div class="toolbar"><input id="newQuickNote" maxlength="500" placeholder="新增常用說明" style="flex:1;min-width:160px"><button class="btn" id="addQuickNoteBtn" type="button">新增</button></div></div>
       <div class="field"><label for="description">照片說明</label><textarea id="description" maxlength="50000" placeholder="請輸入這張照片的說明"></textarea></div>
-      <div class="toolbar"><button class="btn" id="copyPrevDescBtn" type="button">複製上一張說明</button></div>
+      <div class="toolbar smart-copy-toolbar"><button class="btn" id="copyPrevDescBtn" type="button">複製上一張說明</button><button class="btn" id="copyPrevLocationBtn" type="button">複製上一張地點</button><button class="btn" id="copyPrevNoteBtn" type="button">複製上一張備註</button></div>
       <div class="field"><label for="note">備註（選填）</label><textarea id="note" maxlength="20000" placeholder="有需要再填寫"></textarea></div>
-      </section>
+      </details>
 
-      <section class="form-card cat-section cat-export-section">
-        <div class="section-head"><div class="section-emoji">🐈‍⬛</div><div><h3>輸出、檢查與安全保存</h3><p>完成內容後，先檢查，再輸出 Word/PDF，並保護本機專案資料。</p></div></div>
+      <details class="form-card cat-section cat-export-section smart-section" id="exportSection">
+        <summary class="section-head"><div class="section-emoji">🐈‍⬛</div><div><h3>輸出、檢查與安全保存</h3><p>完成內容後再展開，先檢查，再輸出 Word/PDF。</p></div></summary>
+      <div class="case-output-tools">
+        <label class="checkline"><input id="watermarkEnabled" type="checkbox">輸出照片加入浮水印</label>
+        <label class="checkline"><input id="smartLongSplit" type="checkbox" checked>超長照片智慧切頁（保留約 4.5% 上下重疊）</label>
+        <div class="field"><label for="watermarkText">浮水印文字</label><input id="watermarkText" maxlength="1000" placeholder="例如：僅供內部使用／案件編號"></div>
+        <div class="archive-box"><button class="btn archive-btn" id="archiveProjectBtn" type="button">🔒 完成案件並封存</button><div class="tiny" id="archiveStatus">尚未封存；封存前會先執行缺漏檢查。</div></div>
+      </div>
       <div class="exports">
         <button class="btn primary" id="wordBtn" type="button">🐾 輸出 Word</button>
         <button class="btn primary" id="pdfBtn" type="button">🐾 輸出 PDF</button>
@@ -173,7 +183,7 @@
         <div class="tiny">自動儲存同時保留最多 5 代文字／版面復原紀錄。「清除本機專案資料」保留目前畫面；「共用電腦安全離開」會連目前照片、預覽網址與未另存變更一併清除。</div>
       </div>
       <div id="status" class="status">準備完成。所有照片與專案資料都在本機瀏覽器中處理。</div>
-      </section>
+      </details>
     </div>
   </section>
 </main>
@@ -226,6 +236,31 @@
   <div class="modal-card small-modal">
     <div class="modal-head"><div><strong>專案健康檢查</strong><div class="tiny">檢查圖片格式、尺寸、重複 SHA-256、裁切風險、缺漏與 JPEG EXIF/GPS。Word/PDF 圖片會重新編碼，因此不會攜帶來源 EXIF。</div></div><button class="btn" id="closeHealthBtn" type="button">關閉</button></div>
     <div class="modal-body"><div id="healthResults"><div class="tiny">尚未執行檢查。</div></div></div>
+  </div>
+</div>
+
+<div class="action-toast" id="actionToast" hidden><span id="actionToastText">已完成操作</span><button class="btn" id="actionToastUndoBtn" type="button">復原</button></div>
+
+<div class="modal" id="annotationModal">
+  <div class="modal-card annotation-card">
+    <div class="modal-head"><div><strong>🐾 照片註記工具</strong><div class="tiny">非破壞式註記：原始照片不會被修改，輸出時才合成。</div></div><button class="btn" id="closeAnnotationBtn" type="button">關閉</button></div>
+    <div class="annotation-toolbar">
+      <button class="btn annotation-tool active" data-annotation-tool="select" type="button">☝ 選取／移動</button>
+      <button class="btn annotation-tool" data-annotation-tool="rect" type="button">▭ 框選</button>
+      <button class="btn annotation-tool" data-annotation-tool="arrow" type="button">➜ 箭頭</button>
+      <button class="btn annotation-tool" data-annotation-tool="text" type="button">T 文字</button>
+      <button class="btn annotation-tool" data-annotation-tool="blur" type="button">▦ 馬賽克</button>
+      <button class="btn annotation-tool redact-tool" data-annotation-tool="redact" type="button">⬛ 個資遮蔽</button>
+      <button class="btn" id="annotationUndoBtn" type="button">↶ 上一步</button>
+      <button class="btn" id="annotationEditTextBtn" type="button">✎ 修改文字</button>
+      <button class="btn danger" id="annotationDeleteBtn" type="button">刪除選取</button>
+      <button class="btn danger" id="annotationClearBtn" type="button">清除全部</button>
+      <button class="btn primary" id="annotationSaveBtn" type="button">套用註記</button>
+    </div>
+    <div class="annotation-help" id="annotationHelp">點選既有註記可選取與移動。</div>
+    <div class="annotation-selection" id="annotationSelectionStatus">尚未選取註記</div>
+    <div class="redaction-warning">🔒 「個資遮蔽」會在 Word/PDF/預覽輸出時直接烘焙成純色區塊；匯出的影像無法還原被遮住內容。專案內原始照片仍保留，方便日後重新編輯。</div>
+    <div class="annotation-stage-wrap"><canvas id="annotationCanvas" width="1200" height="800"></canvas></div>
   </div>
 </div>
 

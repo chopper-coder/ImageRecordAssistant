@@ -7,7 +7,7 @@
   }
 
   const APP_NAME = '圖片紀錄整理助手';
-  const APP_VERSION = 'V3.5.3';
+  const APP_VERSION = 'V3.7';
   const PHOTOJOB_SCHEMA_VERSION = 2;
   const HISTORY_LIMIT = 30;
   const SUPPORTED_RE = /\.(jpe?g|png|webp|bmp|heic|heif)$/i;
@@ -43,6 +43,8 @@
   const MAX_DESCRIPTION_CHARS = 50000;
   const MAX_NOTE_CHARS = 20000;
   const MAX_PROJECT_FIELD_CHARS = 300;
+  const MAX_ANNOTATIONS_PER_PHOTO = 100;
+  const MAX_ANNOTATION_TEXT_CHARS = 200;
 
   const $ = (id) => document.getElementById(id);
   const state = {
@@ -80,7 +82,158 @@
     healthRunning: false,
     lastHealthResult: null,
     importSequence: 0,
+    annotationTool: 'rect',
+    annotationDraft: [],
+    annotationBaseBlob: null,
+    annotationPointer: null,
+    annotationTargetId: null,
+    annotationSelected: -1,
+    annotationMove: null,
+    caseArchived: false,
+    caseArchivedAt: '',
+    thumbObserver: null,
+    lastRemovedSnapshot: null,
+    toastTimer: null,
     };
+
+
+  function sanitizeAnnotations(value) {
+    if (!Array.isArray(value)) return [];
+    const out = [];
+    for (const raw of value.slice(0, MAX_ANNOTATIONS_PER_PHOTO)) {
+      if (!isPlainObject(raw)) continue;
+      const type = ['rect', 'arrow', 'text', 'blur', 'redact'].includes(raw.type) ? raw.type : '';
+      if (!type) continue;
+      const clamp01 = (n) => {
+        const value = Math.max(0, Math.min(1, Number.isFinite(Number(n)) ? Number(n) : 0));
+        return Math.round(value * 1_000_000) / 1_000_000;
+      };
+      const item = {
+        type,
+        x1: clamp01(raw.x1), y1: clamp01(raw.y1),
+        x2: clamp01(raw.x2), y2: clamp01(raw.y2),
+      };
+      if (type === 'text') item.text = String(raw.text || '').slice(0, MAX_ANNOTATION_TEXT_CHARS);
+      out.push(item);
+    }
+    return out;
+  }
+
+  function annotationCountText(item) {
+    const count = sanitizeAnnotations(item?.annotations).length;
+    return count ? `已有 ${count} 個註記` : '尚無註記';
+  }
+
+
+  function rotateAnnotations(annotations, delta) {
+    const safe = sanitizeAnnotations(annotations);
+    const steps = (((Number(delta) || 0) % 360) + 360) % 360;
+    const rotatePoint = (x, y) => {
+      if (steps === 90) return [1 - y, x];
+      if (steps === 180) return [1 - x, 1 - y];
+      if (steps === 270) return [y, 1 - x];
+      return [x, y];
+    };
+    return sanitizeAnnotations(safe.map((ann) => {
+      const [x1, y1] = rotatePoint(ann.x1, ann.y1);
+      const [x2, y2] = rotatePoint(ann.x2, ann.y2);
+      return { ...ann, x1, y1, x2, y2 };
+    }));
+  }
+
+  function renderTopAutosaveBadge() {
+    const el = $('autosaveTopBadge');
+    if (!el) return;
+    if (!state.autosaveEnabled) {
+      el.className = 'autosave-top-badge off';
+      el.textContent = '💾 自動儲存已停用';
+      return;
+    }
+    if (state.autosaveFailed) {
+      el.className = 'autosave-top-badge err';
+      el.textContent = '⚠️ 自動儲存失敗';
+      return;
+    }
+    if (state.autosaveInFlight || state.autosaveTimer) {
+      el.className = 'autosave-top-badge saving';
+      el.textContent = '💾 儲存中…';
+      return;
+    }
+    if (state.lastAutosaveAt instanceof Date && !Number.isNaN(state.lastAutosaveAt.getTime())) {
+      el.className = 'autosave-top-badge ok';
+      el.textContent = `💾 已儲存 ${state.lastAutosaveAt.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}`;
+      return;
+    }
+    el.className = 'autosave-top-badge';
+    el.textContent = '💾 尚未自動儲存';
+  }
+
+  function updateSmartSections() {
+    const single = $('singlePhotoSection');
+    const batch = $('batchSection');
+    if (single && state.selected >= 0 && !single.dataset.userToggled) single.open = true;
+    if (batch && state.selectedIds.size >= 2 && !batch.dataset.userToggled) batch.open = true;
+  }
+
+  function showActionToast(text, withUndo = false) {
+    const toast = $('actionToast');
+    if (!toast) return;
+    clearTimeout(state.toastTimer);
+    $('actionToastText').textContent = text;
+    $('actionToastUndoBtn').hidden = !withUndo;
+    toast.hidden = false;
+    requestAnimationFrame(() => toast.classList.add('show'));
+    state.toastTimer = setTimeout(() => {
+      toast.classList.remove('show');
+      setTimeout(() => { toast.hidden = true; }, 180);
+    }, 5000);
+  }
+
+  function ensureItemThumbUrl(item) {
+    if (!item) return '';
+    if (!item.thumbUrl || !item.thumbUrl.startsWith('blob:')) item.thumbUrl = URL.createObjectURL(item.blob);
+    return item.thumbUrl;
+  }
+
+  function releaseItemThumbUrl(item) {
+    if (!item) return;
+    if (item.thumbUrl?.startsWith('blob:')) {
+      try { URL.revokeObjectURL(item.thumbUrl); } catch (_) {}
+      item.thumbUrl = '';
+    }
+  }
+
+  function resetThumbnailObserver() {
+    try { state.thumbObserver?.disconnect(); } catch (_) {}
+    state.thumbObserver = null;
+    state.items.forEach(releaseItemThumbUrl);
+  }
+
+  function observeLazyThumbnail(img, item) {
+    if (!img || !item) return;
+    if (typeof IntersectionObserver !== 'function') {
+      img.src = ensureItemThumbUrl(item);
+      return;
+    }
+    if (!state.thumbObserver) {
+      state.thumbObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          const target = entry.target;
+          const id = target?.dataset?.photoId || '';
+          const photo = state.items.find((candidate) => candidate.id === id);
+          if (!photo) continue;
+          if (entry.isIntersecting) {
+            if (!target.src) target.src = ensureItemThumbUrl(photo);
+          } else if (target.src) {
+            target.removeAttribute('src');
+            releaseItemThumbUrl(photo);
+          }
+        }
+      }, { root: $('photoList'), rootMargin: '240px 0px', threshold: 0.01 });
+    }
+    img.dataset.photoId = item.id;
+    state.thumbObserver.observe(img);
+  }
 
   function librariesReady() {
     return Boolean(window.JSZip);
@@ -229,6 +382,7 @@
     if (!state.autosaveEnabled) {
       el.className = 'autosave-health off';
       el.textContent = '自動儲存：已停用。請定期手動儲存 .photojob。';
+      renderTopAutosaveBadge();
       return;
     }
     const last = state.lastAutosaveAt instanceof Date && !Number.isNaN(state.lastAutosaveAt.getTime())
@@ -236,10 +390,12 @@
     if (state.autosaveFailed) {
       el.className = 'autosave-health err';
       el.textContent = `⚠ 自動儲存失敗${last}｜${state.autosaveLastError || '請立即手動儲存 .photojob。'}`;
+      renderTopAutosaveBadge();
       return;
     }
     el.className = 'autosave-health ok';
     el.textContent = `自動儲存：正常${last}`;
+    renderTopAutosaveBadge();
   }
 
   function showLoading(title, text = '請稍候，不要關閉分頁。', options = {}) {
@@ -476,13 +632,320 @@
   }
 
   async function processImage(item, maxDim = 2200, quality = 0.92) {
-    try { return await processImageInWorker(item, maxDim, quality); }
+    let processed;
+    try { processed = await processImageInWorker(item, maxDim, quality); }
     catch (error) {
       const message = String(error?.message || '');
       if (/逾時|取消/.test(message)) throw error;
       if (!/unsupported/i.test(message)) console.warn('Image worker fallback', error);
-      return processImageFallback(item, maxDim, quality);
+      processed = await processImageFallback(item, maxDim, quality);
     }
+    return applyAnnotationsToProcessed(processed, item.annotations, quality);
+  }
+
+
+  function drawArrow(ctx, x1, y1, x2, y2, color = '#ff477e', width = 7) {
+    const angle = Math.atan2(y2 - y1, x2 - x1);
+    const head = Math.max(14, width * 3);
+    ctx.save();
+    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = width; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - head * Math.cos(angle - Math.PI / 6), y2 - head * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(x2 - head * Math.cos(angle + Math.PI / 6), y2 - head * Math.sin(angle + Math.PI / 6));
+    ctx.closePath(); ctx.fill(); ctx.restore();
+  }
+
+  function pixelateCanvasRegion(ctx, x, y, w, h) {
+    const sx = Math.max(0, Math.floor(Math.min(x, x + w)));
+    const sy = Math.max(0, Math.floor(Math.min(y, y + h)));
+    const sw = Math.max(1, Math.floor(Math.abs(w)));
+    const sh = Math.max(1, Math.floor(Math.abs(h)));
+    const cw = ctx.canvas.width, ch = ctx.canvas.height;
+    const rw = Math.min(sw, cw - sx), rh = Math.min(sh, ch - sy);
+    if (rw <= 1 || rh <= 1) return;
+    const tiny = document.createElement('canvas');
+    tiny.width = Math.max(4, Math.min(24, Math.round(rw / 18)));
+    tiny.height = Math.max(4, Math.min(24, Math.round(rh / 18)));
+    const tctx = tiny.getContext('2d', { alpha: false });
+    tctx.drawImage(ctx.canvas, sx, sy, rw, rh, 0, 0, tiny.width, tiny.height);
+    ctx.save(); ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(tiny, 0, 0, tiny.width, tiny.height, sx, sy, rw, rh);
+    ctx.strokeStyle = 'rgba(255,71,126,.75)'; ctx.lineWidth = Math.max(2, Math.round(Math.min(cw, ch) / 300)); ctx.strokeRect(sx, sy, rw, rh);
+    ctx.restore(); tiny.width = 1; tiny.height = 1;
+  }
+
+  function drawAnnotationList(ctx, annotations, width, height) {
+    const list = sanitizeAnnotations(annotations);
+    const lineWidth = Math.max(4, Math.round(Math.min(width, height) / 180));
+    for (const ann of list) {
+      const x1 = ann.x1 * width, y1 = ann.y1 * height, x2 = ann.x2 * width, y2 = ann.y2 * height;
+      if (ann.type === 'blur') {
+        pixelateCanvasRegion(ctx, x1, y1, x2 - x1, y2 - y1);
+      } else if (ann.type === 'redact') {
+        const rx = Math.min(x1, x2), ry = Math.min(y1, y2), rw = Math.abs(x2 - x1), rh = Math.abs(y2 - y1);
+        ctx.save(); ctx.fillStyle = '#111111'; ctx.fillRect(rx, ry, rw, rh); ctx.restore();
+      } else if (ann.type === 'rect') {
+        ctx.save(); ctx.strokeStyle = '#ff477e'; ctx.lineWidth = lineWidth; ctx.setLineDash([]);
+        ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1)); ctx.restore();
+      } else if (ann.type === 'arrow') {
+        drawArrow(ctx, x1, y1, x2, y2, '#ff477e', lineWidth);
+      } else if (ann.type === 'text' && ann.text) {
+        const fontSize = Math.max(18, Math.round(Math.min(width, height) / 28));
+        ctx.save(); ctx.font = `700 ${fontSize}px "Microsoft JhengHei",sans-serif`; ctx.textBaseline = 'top';
+        const pad = Math.max(6, Math.round(fontSize * .28));
+        const text = String(ann.text).slice(0, MAX_ANNOTATION_TEXT_CHARS);
+        const tw = Math.min(width - x1 - 2, ctx.measureText(text).width + pad * 2);
+        ctx.fillStyle = 'rgba(255,255,255,.90)'; ctx.fillRect(x1, y1, Math.max(30, tw), fontSize + pad * 2);
+        ctx.strokeStyle = '#ff477e'; ctx.lineWidth = Math.max(2, lineWidth / 2); ctx.strokeRect(x1, y1, Math.max(30, tw), fontSize + pad * 2);
+        ctx.fillStyle = '#b91c5c'; ctx.fillText(text, x1 + pad, y1 + pad); ctx.restore();
+      }
+    }
+  }
+
+  async function applyAnnotationsToProcessed(processed, annotations, quality = 0.92) {
+    const safe = sanitizeAnnotations(annotations);
+    if (!safe.length) return processed;
+    const img = await loadBlobImage(processed.blob);
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth || processed.width; canvas.height = img.naturalHeight || processed.height;
+    const ctx = canvas.getContext('2d', { alpha: false, colorSpace: 'srgb' });
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    drawAnnotationList(ctx, safe, canvas.width, canvas.height);
+    const blob = await canvasToBlob(canvas, 'image/jpeg', quality);
+    const out = { blob, width: canvas.width, height: canvas.height };
+    canvas.width = 1; canvas.height = 1;
+    return out;
+  }
+
+
+  function annotationCanvasPoint(event) {
+    const canvas = $('annotationCanvas');
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width))),
+      y: Math.max(0, Math.min(1, (event.clientY - rect.top) / Math.max(1, rect.height))),
+    };
+  }
+
+  function annotationBounds(ann) {
+    const x1 = Math.min(ann.x1, ann.x2), y1 = Math.min(ann.y1, ann.y2);
+    let x2 = Math.max(ann.x1, ann.x2), y2 = Math.max(ann.y1, ann.y2);
+    if (ann.type === 'text') { x2 = Math.min(1, ann.x1 + .32); y2 = Math.min(1, ann.y1 + .10); }
+    return { x1, y1, x2, y2 };
+  }
+
+  function annotationHitTest(point) {
+    const list = state.annotationDraft;
+    const pad = .018;
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const ann = list[i];
+      const b = annotationBounds(ann);
+      if (point.x >= b.x1 - pad && point.x <= b.x2 + pad && point.y >= b.y1 - pad && point.y <= b.y2 + pad) return i;
+    }
+    return -1;
+  }
+
+  function moveAnnotationBy(ann, dx, dy) {
+    const b = annotationBounds(ann);
+    dx = Math.max(-b.x1, Math.min(1 - b.x2, dx));
+    dy = Math.max(-b.y1, Math.min(1 - b.y2, dy));
+    return sanitizeAnnotations([{ ...ann, x1: ann.x1 + dx, y1: ann.y1 + dy, x2: ann.x2 + dx, y2: ann.y2 + dy }])[0] || ann;
+  }
+
+  function drawAnnotationSelection(ctx, ann, width, height) {
+    if (!ann) return;
+    const b = annotationBounds(ann);
+    ctx.save();
+    ctx.strokeStyle = '#29a3c7'; ctx.lineWidth = Math.max(2, Math.round(Math.min(width, height) / 260));
+    ctx.setLineDash([8, 6]);
+    ctx.strokeRect(b.x1 * width, b.y1 * height, Math.max(3, (b.x2 - b.x1) * width), Math.max(3, (b.y2 - b.y1) * height));
+    ctx.restore();
+  }
+
+  function renderAnnotationCanvas(preview = null) {
+    const canvas = $('annotationCanvas');
+    const img = state.annotationBaseImage;
+    if (!canvas || !img) return;
+    const ctx = canvas.getContext('2d', { alpha: false, colorSpace: 'srgb' });
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    drawAnnotationList(ctx, state.annotationDraft, canvas.width, canvas.height);
+    if (preview) drawAnnotationList(ctx, [preview], canvas.width, canvas.height);
+    if (state.annotationSelected >= 0) drawAnnotationSelection(ctx, state.annotationDraft[state.annotationSelected], canvas.width, canvas.height);
+    if ($('annotationSelectionStatus')) $('annotationSelectionStatus').textContent = state.annotationSelected >= 0 ? `已選取第 ${state.annotationSelected + 1} 個註記` : '尚未選取註記';
+  }
+
+  function setAnnotationTool(tool) {
+    state.annotationTool = tool;
+    if ($('annotationCanvas')) $('annotationCanvas').dataset.selectMode = tool === 'select' ? '1' : '0';
+    if (tool !== 'select') state.annotationSelected = -1;
+    document.querySelectorAll('[data-annotation-tool]').forEach((btn) => btn.classList.toggle('active', btn.dataset.annotationTool === tool));
+    const help = {
+      select: '點選既有註記可選取，拖曳可移動；文字註記可雙擊修改。',
+      rect: '拖曳畫出粉紅色框選範圍。',
+      arrow: '從起點拖到終點畫箭頭。',
+      text: '在照片上點一下，再輸入文字。',
+      blur: '拖曳選取要馬賽克的區域。',
+      redact: '拖曳建立不可逆純色遮蔽；輸出 Word/PDF 時會直接烘焙進影像。',
+    };
+    $('annotationHelp').textContent = help[tool] || '';
+    renderAnnotationCanvas();
+  }
+
+  async function openAnnotationEditor() {
+    if (state.selected < 0 || !state.items[state.selected]) return;
+    const item = state.items[state.selected];
+    showLoading('正在準備照片註記…', '建立安全的編輯預覽。');
+    try {
+      const baseItem = { ...item, annotations: [] };
+      state.annotationTargetId = item.id;
+      const processed = await (async () => {
+        try { return await processImageInWorker(baseItem, 1800, 0.94); }
+        catch (error) {
+          const message = String(error?.message || '');
+          if (/逾時|取消/.test(message)) throw error;
+          return processImageFallback(baseItem, 1800, 0.94);
+        }
+      })();
+      state.annotationBaseBlob = processed.blob;
+      state.annotationBaseImage = await loadBlobImage(processed.blob);
+      state.annotationDraft = sanitizeAnnotations(item.annotations);
+      state.annotationSelected = -1;
+      state.annotationMove = null;
+      const maxW = 1200, maxH = 760;
+      const fit = fitDimensions(state.annotationBaseImage.naturalWidth, state.annotationBaseImage.naturalHeight, maxW, maxH);
+      const canvas = $('annotationCanvas'); canvas.width = fit.width; canvas.height = fit.height;
+      setAnnotationTool('select'); renderAnnotationCanvas();
+      $('annotationModal').classList.add('show');
+    } catch (error) {
+      state.annotationTargetId = null;
+      setStatus(`註記工具開啟失敗：${error.message}`, 'err');
+    } finally { hideLoading(); }
+  }
+
+  function closeAnnotationEditor() {
+    state.annotationPointer = null;
+    state.annotationMove = null;
+    state.annotationSelected = -1;
+    state.annotationTargetId = null;
+    state.annotationBaseBlob = null;
+    if (state.annotationBaseImage) {
+      try { state.annotationBaseImage.src = ''; } catch (_) {}
+    }
+    state.annotationBaseImage = null;
+    state.annotationDraft = [];
+    const canvas = $('annotationCanvas');
+    if (canvas) { canvas.width = 1; canvas.height = 1; }
+    $('annotationModal').classList.remove('show');
+  }
+
+  function beginAnnotationPointer(event) {
+    if (!state.annotationBaseImage || event.isPrimary === false || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    const point = annotationCanvasPoint(event);
+    if (state.annotationTool === 'select') {
+      const hit = annotationHitTest(point);
+      state.annotationSelected = hit;
+      if (hit >= 0) state.annotationMove = { id: event.pointerId, start: point, original: { ...state.annotationDraft[hit] } };
+      try { $('annotationCanvas').setPointerCapture?.(event.pointerId); } catch (_) {}
+      renderAnnotationCanvas(); event.preventDefault(); return;
+    }
+    if (state.annotationTool === 'text') {
+      const text = prompt('請輸入要顯示在照片上的文字（最多 200 字）：', '');
+      if (text && text.trim()) {
+        state.annotationDraft.push({ type: 'text', x1: point.x, y1: point.y, x2: point.x, y2: point.y, text: text.trim().slice(0, MAX_ANNOTATION_TEXT_CHARS) });
+        state.annotationSelected = state.annotationDraft.length - 1;
+        setAnnotationTool('select');
+      }
+      return;
+    }
+    state.annotationPointer = { id: event.pointerId, start: point, current: point, tool: state.annotationTool };
+    try { $('annotationCanvas').setPointerCapture?.(event.pointerId); } catch (_) {}
+    event.preventDefault();
+  }
+
+  function moveAnnotationPointer(event) {
+    if (state.annotationMove?.id === event.pointerId && state.annotationSelected >= 0) {
+      const point = annotationCanvasPoint(event), move = state.annotationMove;
+      state.annotationDraft[state.annotationSelected] = moveAnnotationBy(move.original, point.x - move.start.x, point.y - move.start.y);
+      renderAnnotationCanvas(); event.preventDefault(); return;
+    }
+    const pointer = state.annotationPointer;
+    if (!pointer || pointer.id !== event.pointerId) return;
+    pointer.current = annotationCanvasPoint(event);
+    renderAnnotationCanvas({ type: pointer.tool, x1: pointer.start.x, y1: pointer.start.y, x2: pointer.current.x, y2: pointer.current.y });
+  }
+
+  function endAnnotationPointer(event) {
+    if (state.annotationMove?.id === event.pointerId) {
+      try { $('annotationCanvas').releasePointerCapture?.(event.pointerId); } catch (_) {}
+      state.annotationMove = null; renderAnnotationCanvas(); return;
+    }
+    const pointer = state.annotationPointer;
+    if (!pointer || pointer.id !== event.pointerId) return;
+    pointer.current = annotationCanvasPoint(event);
+    const dx = Math.abs(pointer.current.x - pointer.start.x), dy = Math.abs(pointer.current.y - pointer.start.y);
+    if (dx > .008 || dy > .008) {
+      state.annotationDraft.push({ type: pointer.tool, x1: pointer.start.x, y1: pointer.start.y, x2: pointer.current.x, y2: pointer.current.y });
+      state.annotationSelected = state.annotationDraft.length - 1;
+      setAnnotationTool('select');
+    }
+    try { $('annotationCanvas').releasePointerCapture?.(event.pointerId); } catch (_) {}
+    state.annotationPointer = null; renderAnnotationCanvas();
+  }
+
+  function cancelAnnotationPointer(event) {
+    if (state.annotationMove?.id === event.pointerId) {
+      if (state.annotationSelected >= 0) state.annotationDraft[state.annotationSelected] = state.annotationMove.original;
+      state.annotationMove = null;
+      try { $('annotationCanvas').releasePointerCapture?.(event.pointerId); } catch (_) {}
+      renderAnnotationCanvas(); return;
+    }
+    const pointer = state.annotationPointer;
+    if (!pointer || pointer.id !== event.pointerId) return;
+    try { $('annotationCanvas').releasePointerCapture?.(event.pointerId); } catch (_) {}
+    state.annotationPointer = null;
+    renderAnnotationCanvas();
+  }
+
+  function deleteSelectedAnnotation() {
+    if (state.annotationSelected < 0 || !state.annotationDraft[state.annotationSelected]) return;
+    state.annotationDraft.splice(state.annotationSelected, 1);
+    state.annotationSelected = Math.min(state.annotationSelected, state.annotationDraft.length - 1);
+    renderAnnotationCanvas();
+  }
+
+  function editSelectedAnnotationText() {
+    const ann = state.annotationDraft[state.annotationSelected];
+    if (!ann || ann.type !== 'text') return;
+    const value = prompt('修改文字註記：', ann.text || '');
+    if (value === null) return;
+    const text = value.trim().slice(0, MAX_ANNOTATION_TEXT_CHARS);
+    if (!text) return deleteSelectedAnnotation();
+    ann.text = text; renderAnnotationCanvas();
+  }
+
+  async function applyOutputWatermark(processed, meta) {
+    if (!meta?.watermark_enabled) return processed;
+    const text = String(meta.watermark_text || meta.case_no || '僅供內部使用').trim().slice(0, 120);
+    if (!text) return processed;
+    const img = await loadBlobImage(processed.blob);
+    const canvas = document.createElement('canvas'); canvas.width = img.naturalWidth || processed.width; canvas.height = img.naturalHeight || processed.height;
+    const ctx = canvas.getContext('2d', { alpha: false, colorSpace: 'srgb' });
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const fontSize = Math.max(18, Math.round(Math.min(canvas.width, canvas.height) / 24));
+    ctx.save(); ctx.globalAlpha = .58; ctx.font = `700 ${fontSize}px "Microsoft JhengHei",sans-serif`; ctx.textBaseline = 'bottom';
+    const pad = Math.max(10, Math.round(fontSize * .45)); const tw = ctx.measureText(text).width;
+    const x = Math.max(pad, canvas.width - tw - pad * 2), y = canvas.height - pad;
+    ctx.fillStyle = 'rgba(255,255,255,.82)'; ctx.fillRect(x - pad / 2, y - fontSize - pad / 2, Math.min(canvas.width - x + pad / 2, tw + pad), fontSize + pad);
+    ctx.fillStyle = '#5b3d51'; ctx.fillText(text, x, y); ctx.restore();
+    const blob = await canvasToBlob(canvas, 'image/jpeg', .92); const out = { blob, width: canvas.width, height: canvas.height };
+    canvas.width = 1; canvas.height = 1; return out;
+  }
+
+  async function processOutputImage(item, maxDim, quality, meta) {
+    const processed = await processImage(item, maxDim, quality);
+    return applyOutputWatermark(processed, meta);
   }
 
   function hammingDistanceHex(a, b) {
@@ -589,11 +1052,17 @@
       org_name: $('orgName').value.trim(),
       title: $('title').value.trim() || '照片紀錄表',
       case: $('caseName').value.trim(),
+      case_no: $('caseNumber')?.value.trim() || '',
       date: $('recordDate').value,
       location: $('location').value.trim(),
       per_page: Number($('perPage').value || 2),
       cover: $('cover').checked,
       page_numbers: $('includePageNumber').checked,
+      watermark_enabled: Boolean($('watermarkEnabled')?.checked),
+      watermark_text: $('watermarkText')?.value.trim() || '',
+      smart_long_split: Boolean($('smartLongSplit')?.checked),
+      archived: Boolean(state.caseArchived),
+      archived_at: state.caseArchivedAt || '',
     };
   }
 
@@ -622,10 +1091,11 @@
         note: item.note || '',
         location: item.location || '',
         rotation: Number(item.rotation || 0),
-        crop: clampCrop(item.crop),
+        crop: clampCrop(item.crop), annotations: sanitizeAnnotations(item.annotations),
         source_format: item.sourceFormat || '', source_bytes: Number(item.sourceBytes || 0), decoder: item.decoder || '',
         source_dimensions: item.sourceDimensions || '', normalized_at: item.normalizedAt || '', privacy: item.privacy || { hasExif: false, hasGps: false },
         captured_at: item.capturedAt || '', capture_source: item.captureSource || '', source_folder: item.sourceFolder || '', import_order: Number(item.importOrder || 0),
+        section: item.section || '', tags: item.tags || '', compare_group: item.compareGroup || '', compare_role: item.compareRole || '',
       })),
       logo: state.logo ? { name: state.logo.name, blob: state.logo.blob } : null,
     };
@@ -645,10 +1115,11 @@
         note: p.note,
         location: p.location,
         rotation: p.rotation,
-        crop: p.crop,
+        crop: p.crop, annotations: sanitizeAnnotations(p.annotations),
         source_format: p.source_format || '', source_bytes: Number(p.source_bytes || 0), decoder: p.decoder || '',
         source_dimensions: p.source_dimensions || '', normalized_at: p.normalized_at || '', privacy: p.privacy || { hasExif: false, hasGps: false },
         captured_at: p.captured_at || '', capture_source: p.capture_source || '', source_folder: p.source_folder || '', import_order: Number(p.import_order || 0),
+        section: p.section || '', tags: p.tags || '', compare_group: p.compare_group || '', compare_role: p.compare_role || '',
       })),
       logo: snapshot.logo ? { name: snapshot.logo.name, blob: blobIdentity(snapshot.logo.blob) } : null,
     };
@@ -661,7 +1132,7 @@
       badge.hidden = !state.dirty;
       badge.textContent = state.dirty ? '● 尚未另存' : '';
     }
-    document.title = `${state.dirty ? '● ' : ''}${APP_NAME} ${APP_VERSION}｜Photo List Accessibility Hotfix`;
+    document.title = `${state.dirty ? '● ' : ''}${APP_NAME} ${APP_VERSION}｜Case Management & Advanced Annotation Edition`;
   }
 
   function refreshDirtyState() {
@@ -1113,7 +1584,7 @@
       try {
         jpegBlob = await decodeHeicWithWorker(file, label);
       } catch (error) {
-        if (/Failed to fetch|module|404|載入|Worker/i.test(String(error?.message || ''))) throw new Error('此瀏覽器無法原生讀取 HEIC，且本機 HEIC 解碼元件不存在或無法載入。請使用完整 V3.5.3 離線建置版。');
+        if (/Failed to fetch|module|404|載入|Worker/i.test(String(error?.message || ''))) throw new Error('此瀏覽器無法原生讀取 HEIC，且本機 HEIC 解碼元件不存在或無法載入。請使用完整 V3.7 離線建置版。');
         throw new Error(`${label} HEIC/HEIF 轉換失敗：${error.message || '解碼器無法處理此檔案'}`);
       }
     }
@@ -1183,6 +1654,10 @@
     const w = pageWidth - margin * 2;
     const details = [
       ['案件／主題', meta.case || '—'],
+      ...(meta.case_no ? [['案件編號', meta.case_no]] : []),
+      ...(item.section ? [['章節', item.section]] : []),
+      ...(item.compareGroup && item.compareRole ? [['前後比較', `${item.compareGroup}｜${item.compareRole === 'before' ? '改善前' : '改善後'}`]] : []),
+      ...(item.tags ? [['標籤', item.tags]] : []),
       ['紀錄日期', meta.date || '—'],
       ['地點', effectiveLocation(item, meta) || '—'],
       ['照片說明', item.description || '（未填寫）'],
@@ -1201,24 +1676,81 @@
     return [`有 ${overflow.length} 張照片的說明／備註即使改成一頁 1 張仍超出版面（照片 ${overflow.slice(0, 8).map((n) => String(n).padStart(2, '0')).join('、')}${overflow.length > 8 ? '…' : ''}）。為避免正式文件截字，請先縮短文字後再輸出。`];
   }
 
+  function itemOutputAspect(item) {
+    const match = String(item?.sourceDimensions || '').match(/^(\d+)x(\d+)$/i);
+    if (!match) return 0;
+    let w = Number(match[1]), h = Number(match[2]);
+    if (!w || !h) return 0;
+    if ([90,270].includes(((Number(item.rotation || 0) % 360) + 360) % 360)) [w, h] = [h, w];
+    const c = clampCrop(item.crop); w *= Math.max(.05, (100 - c.left - c.right) / 100); h *= Math.max(.05, (100 - c.top - c.bottom) / 100);
+    return h / Math.max(1, w);
+  }
+
+  function longSplitCount(item, meta = metaPayload()) {
+    if (!meta.smart_long_split) return 1;
+    const ratio = itemOutputAspect(item);
+    if (!Number.isFinite(ratio) || ratio <= 3.0) return 1;
+    return Math.max(2, Math.min(6, Math.ceil(ratio / 1.9)));
+  }
+
+  function buildOutputEntries(meta = metaPayload()) {
+    const entries = [];
+    state.items.forEach((item, index) => {
+      const segmentCount = longSplitCount(item, meta);
+      for (let segment = 0; segment < segmentCount; segment += 1) entries.push({ index, segment, segmentCount });
+    });
+    return entries;
+  }
+
+  function outputEntryKey(entry) { return `${entry.index}:${entry.segment || 0}:${entry.segmentCount || 1}`; }
+  function outputEntrySuffix(entry) { return entry.segmentCount > 1 ? `-${entry.segment + 1}` : ''; }
+
+  async function sliceProcessedForEntry(processed, entry, quality = .92) {
+    if (!entry || entry.segmentCount <= 1) return processed;
+    const img = await loadBlobImage(processed.blob); const w = img.naturalWidth || processed.width, h = img.naturalHeight || processed.height;
+    const base = h / entry.segmentCount; const overlap = Math.min(base * .045, 80);
+    const sy = Math.max(0, Math.floor(entry.segment * base - (entry.segment ? overlap : 0)));
+    const ey = Math.min(h, Math.ceil((entry.segment + 1) * base + (entry.segment < entry.segmentCount - 1 ? overlap : 0)));
+    const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = Math.max(1, ey - sy);
+    const ctx = canvas.getContext('2d', { alpha: false, colorSpace: 'srgb' }); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, sy, w, ey - sy, 0, 0, w, ey - sy);
+    const blob = await canvasToBlob(canvas, 'image/jpeg', quality); const out = { blob, width: canvas.width, height: canvas.height };
+    canvas.width = 1; canvas.height = 1; return out;
+  }
+
+  async function processOutputEntry(entry, maxDim, quality, meta) {
+    const item = state.items[entry.index];
+    let processed = await processImage(item, maxDim, quality);
+    processed = await sliceProcessedForEntry(processed, entry, quality);
+    return applyOutputWatermark(processed, meta);
+  }
+
   function buildPhotoPagePlan(meta = metaPayload()) {
     const pages = [];
-    let i = 0;
+    const entries = buildOutputEntries(meta);
+    let p = 0;
     const requested = Math.max(1, Math.min(4, Number(meta.per_page || 2)));
-    while (i < state.items.length) {
-      const firstCap = itemLayoutCap(state.items[i], meta);
-      if (firstCap === 1) { pages.push([i]); i += 1; continue; }
-      let cap = Math.min(requested, firstCap);
-      const page = [];
-      while (i < state.items.length && page.length < cap) {
-        const nextCap = itemLayoutCap(state.items[i], meta);
+    while (p < entries.length) {
+      const currentEntry = entries[p]; const current = state.items[currentEntry.index];
+      if (currentEntry.segmentCount > 1) { pages.push([currentEntry]); p += 1; continue; }
+      const nextEntry = entries[p + 1]; const next = nextEntry ? state.items[nextEntry.index] : null;
+      const isComparePair = requested >= 2 && nextEntry?.segmentCount === 1 && current?.compareGroup && current?.compareRole === 'before' && next?.compareGroup === current.compareGroup && next?.compareRole === 'after';
+      if (isComparePair) { pages.push([currentEntry, nextEntry]); p += 2; continue; }
+      const firstCap = itemLayoutCap(current, meta);
+      if (firstCap === 1) { pages.push([currentEntry]); p += 1; continue; }
+      let cap = Math.min(requested, firstCap); const page = [];
+      while (p < entries.length && page.length < cap) {
+        const entry = entries[p]; const item = state.items[entry.index];
+        if (entry.segmentCount > 1 && page.length) break;
+        if (entry.segmentCount > 1) { page.push(entry); p += 1; cap = 1; break; }
+        const nextCap = itemLayoutCap(item, meta);
         if (nextCap === 1 && page.length) break;
-        if (nextCap === 1) { page.push(i); i += 1; cap = 1; break; }
+        if (nextCap === 1) { page.push(entry); p += 1; cap = 1; break; }
         if (nextCap === 2) cap = Math.min(cap, 2);
         if (page.length >= cap) break;
-        page.push(i); i += 1;
+        page.push(entry); p += 1;
       }
-      if (!page.length) { page.push(i); i += 1; }
+      if (!page.length) { page.push(entries[p]); p += 1; }
       pages.push(page);
     }
     return pages;
@@ -1344,10 +1876,38 @@
     const missingDesc = state.items.map((item, index) => (!String(item.description || '').trim() ? index + 1 : null)).filter(Boolean);
     if (missingDesc.length) issues.push(`有 ${missingDesc.length} 張照片尚未填寫照片說明（照片 ${missingDesc.slice(0, 8).map((n) => String(n).padStart(2, '0')).join('、')}${missingDesc.length > 8 ? '…' : ''}）。`);
     const longCount = state.items.filter((item) => itemLayoutCap(item, meta) < meta.per_page).length;
+    const splitCount = state.items.filter((item) => longSplitCount(item, meta) > 1).length;
     if (longCount) issues.push(`有 ${longCount} 張照片說明較長，輸出時會自動降低該頁照片數，避免文字被裁掉。`);
+    if (splitCount) issues.push(`有 ${splitCount} 張超長照片會在輸出時智慧分段，原始照片與專案資料不會被切割。`);
     const gpsCount = state.items.filter((item) => item.privacy?.hasGps).length;
     if (gpsCount) issues.push(`有 ${gpsCount} 張來源 JPEG 含 GPS EXIF；正式 Word/PDF 會重新編碼移除中繼資料，但 .photojob 仍會保留來源圖片。`);
     return issues;
+  }
+
+
+  function preflightPhotoTargets() {
+    const meta = metaPayload();
+    const targets = [];
+    state.items.forEach((item, index) => {
+      if (!String(item.description || '').trim()) targets.push({ index, label: `照片 ${String(index + 1).padStart(2, '0')}：缺少說明` });
+      else if (!String(item.location || '').trim() && !meta.location) targets.push({ index, label: `照片 ${String(index + 1).padStart(2, '0')}：缺少地點` });
+    });
+    return targets.slice(0, 30);
+  }
+
+  function appendPreflightJumpTargets() {
+    const host = $('preflightResults');
+    const targets = preflightPhotoTargets();
+    if (!host || !targets.length) return;
+    const box = createEl('div', 'preflight-jump-box');
+    box.appendChild(createEl('strong', '', '快速前往問題照片：'));
+    const wrap = createEl('div', 'preflight-jump-list');
+    targets.forEach(({ index, label }) => {
+      const btn = createEl('button', 'btn preflight-jump-btn', label); btn.type = 'button';
+      btn.addEventListener('click', () => { $('preflightModal').classList.remove('show'); selectItem(index); $('singlePhotoSection').open = true; $('description').focus(); });
+      wrap.appendChild(btn);
+    });
+    box.appendChild(wrap); host.appendChild(box);
   }
 
   function renderPreflightResults(issues, critical = []) {
@@ -1371,6 +1931,7 @@
       issues.forEach((issue) => ul.appendChild(createEl('li', '', issue)));
       box.append(title, ul); host.appendChild(box);
     }
+    appendPreflightJumpTargets();
   }
 
   function openPreflight(pendingExport = null) {
@@ -1422,7 +1983,7 @@
     const name = $('caseTemplateName').value.trim();
     if (!name) return setStatus('請先輸入案件範本名稱。', 'err');
     const meta = metaPayload();
-    const data = { name, org_name: meta.org_name, title: meta.title, case: meta.case, location: meta.location, per_page: meta.per_page, cover: meta.cover, page_numbers: meta.page_numbers };
+    const data = { name, org_name: meta.org_name, title: meta.title, case: meta.case, case_no: meta.case_no, location: meta.location, per_page: meta.per_page, cover: meta.cover, page_numbers: meta.page_numbers, watermark_enabled: meta.watermark_enabled, watermark_text: meta.watermark_text, smart_long_split: meta.smart_long_split };
     const existing = state.caseTemplates.findIndex((tpl) => tpl.name === name);
     if (existing >= 0) state.caseTemplates[existing] = data; else state.caseTemplates.push(data);
     persistCaseTemplates(); renderCaseTemplates();
@@ -1439,11 +2000,49 @@
     $('orgName').value = tpl.org_name || '';
     $('title').value = tpl.title || '照片紀錄表';
     $('caseName').value = tpl.case || '';
+    if ($('caseNumber')) $('caseNumber').value = tpl.case_no || '';
+    if ($('watermarkEnabled')) $('watermarkEnabled').checked = Boolean(tpl.watermark_enabled);
+    if ($('watermarkText')) $('watermarkText').value = tpl.watermark_text || '';
+    if ($('smartLongSplit')) $('smartLongSplit').checked = tpl.smart_long_split !== false;
     $('location').value = tpl.location || '';
     $('perPage').value = String(tpl.per_page || 2);
     $('cover').checked = Boolean(tpl.cover);
     $('includePageNumber').checked = Boolean(tpl.page_numbers);
     setStatus(`已套用案件範本「${tpl.name}」。`, 'ok'); scheduleAutosave();
+  }
+
+  function applyArchiveMode() {
+    const archived = Boolean(state.caseArchived);
+    document.body.classList.toggle('case-archived', archived);
+    const keepEnabled = new Set(['saveProjectBtn','openProjectBtn','previewBtn','wordBtn','pdfBtn','bothBtn','archiveProjectBtn','projectInput','photoFilter']);
+    document.querySelectorAll('input,textarea,select,button').forEach((el) => {
+      if (!el.id || keepEnabled.has(el.id) || el.closest('.modal')) return;
+      if (archived) { if (!el.disabled) el.dataset.archiveDisabled = '1'; el.disabled = true; }
+      else if (el.dataset.archiveDisabled === '1') { el.disabled = false; delete el.dataset.archiveDisabled; }
+    });
+    if ($('archiveProjectBtn')) $('archiveProjectBtn').textContent = archived ? '🔓 解除封存' : '🔒 完成案件並封存';
+    if ($('archiveStatus')) $('archiveStatus').textContent = archived ? `已封存${state.caseArchivedAt ? `｜${new Date(state.caseArchivedAt).toLocaleString('zh-TW')}` : ''}｜目前為唯讀模式` : '尚未封存；封存前會先執行缺漏檢查。';
+  }
+
+  function completionBlockingIssues() {
+    const meta = metaPayload(); const issues = [...criticalPreflightIssues(meta)];
+    if (!meta.case) issues.push('尚未填寫案件／主題。');
+    if (!meta.date) issues.push('尚未填寫紀錄日期。');
+    if (!meta.location && state.items.some((item) => !String(item.location || '').trim())) issues.push('仍有照片缺少地點。');
+    const missing = state.items.filter((item) => !String(item.description || '').trim()).length;
+    if (missing) issues.push(`仍有 ${missing} 張照片缺少照片說明。`);
+    return issues;
+  }
+
+  function toggleArchiveProject() {
+    if (state.caseArchived) {
+      if (!confirm('確定解除案件封存並重新允許編輯嗎？')) return;
+      state.caseArchived = false; state.caseArchivedAt = ''; applyArchiveMode(); updateButtons(); scheduleAutosave(); setStatus('已解除案件封存，可繼續編輯。', 'ok'); return;
+    }
+    const blockers = completionBlockingIssues();
+    if (blockers.length) { openPreflight(null); setStatus('案件仍有必要欄位或版面阻斷問題，請先修正後再封存。', 'err'); return; }
+    if (!confirm('所有檢查已通過。封存後將切換為唯讀模式，確定完成案件並封存嗎？')) return;
+    state.caseArchived = true; state.caseArchivedAt = new Date().toISOString(); applyArchiveMode(); scheduleAutosave(); setStatus('案件已完成並封存；請再儲存 .photojob 作為正式封存檔。', 'ok');
   }
 
   function updateButtons() {
@@ -1454,10 +2053,14 @@
     $('prevPhotoBtn').disabled = !(ok && state.selected > 0);
     $('nextPhotoBtn').disabled = !(ok && state.selected < state.items.length - 1);
     $('copyPrevDescBtn').disabled = !(ok && state.selected > 0);
+    $('copyPrevLocationBtn').disabled = !(ok && state.selected > 0);
+    $('copyPrevNoteBtn').disabled = !(ok && state.selected > 0);
+    $('annotationBtn').disabled = !ok;
     $('description').disabled = !ok;
     $('note').disabled = !ok;
     $('photoName').disabled = !ok;
     $('photoLocation').disabled = !ok;
+    ['photoSection','photoTags','compareGroup','compareRole'].forEach((id) => { if ($(id)) $(id).disabled = !ok; });
     $('batchRenameBtn').disabled = !state.items.length;
     $('saveProjectBtn').disabled = !state.items.length;
     $('previewBtn').disabled = !state.items.length;
@@ -1469,10 +2072,12 @@
     if ($('undoBtn')) $('undoBtn').disabled = state.historyUndo.length === 0;
     if ($('redoBtn')) $('redoBtn').disabled = state.historyRedo.length === 0;
     if ($('historyStatus')) $('historyStatus').textContent = `復原 ${state.historyUndo.length}｜重做 ${state.historyRedo.length}｜最多 30 個操作階段`;
+    applyArchiveMode();
   }
 
   function renderList() {
     const list = $('photoList');
+    resetThumbnailObserver();
     list.innerHTML = '';
     const validIds = new Set(state.items.map((item) => item.id));
     state.selectedIds = new Set([...state.selectedIds].filter((id) => validIds.has(id)));
@@ -1487,7 +2092,7 @@
     const query = String($('photoFilter')?.value || '').trim().toLocaleLowerCase('zh-Hant');
     let visible = 0;
     state.items.forEach((item, index) => {
-      const haystack = `${item.displayName || ''}\n${item.originalName || ''}\n${item.description || ''}\n${item.location || ''}\n${item.sourceFolder || ''}`.toLocaleLowerCase('zh-Hant');
+      const haystack = `${item.displayName || ''}\n${item.originalName || ''}\n${item.description || ''}\n${item.location || ''}\n${item.sourceFolder || ''}\n${item.section || ''}\n${item.tags || ''}\n${item.compareGroup || ''}\n${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       if (query && !haystack.includes(query)) return;
       visible += 1;
       const row = document.createElement('div');
@@ -1504,6 +2109,12 @@
         if (check.checked) state.selectedIds.add(item.id); else state.selectedIds.delete(item.id);
         renderList();
       });
+      const thumb = document.createElement('img');
+      thumb.className = 'photo-thumb';
+      thumb.alt = '';
+      thumb.loading = 'lazy';
+      thumb.decoding = 'async';
+      observeLazyThumbnail(thumb, item);
       const num = document.createElement('span');
       num.className = 'num';
       num.textContent = String(index + 1).padStart(2, '0');
@@ -1518,10 +2129,12 @@
       const subParts = [];
       if (item.capturedAt) subParts.push(formatCapturedAt(item.capturedAt));
       if (item.sourceFolder) subParts.push(`📁 ${item.sourceFolder}`);
+      if (item.section) subParts.push(`§ ${item.section}`);
+      if (item.compareGroup && item.compareRole) subParts.push(`${item.compareRole === 'before' ? '前' : '後'}:${item.compareGroup}`);
       if (item.privacy?.hasGps) subParts.push('GPS');
       sub.textContent = subParts.join('｜') || (item.sourceFormat ? String(item.sourceFormat).toUpperCase() : '圖片');
       nameWrap.append(name, sub);
-      row.append(check, num, nameWrap);
+      row.append(check, thumb, num, nameWrap);
       row.addEventListener('click', (event) => {
         if (event.shiftKey && state.selected >= 0) {
           const from = Math.min(state.selected, index), to = Math.max(state.selected, index);
@@ -1530,16 +2143,25 @@
         selectItem(index);
       });
       row.addEventListener('dragstart', () => { state.dragIndex = index; row.classList.add('dragging'); });
-      row.addEventListener('dragend', () => { row.classList.remove('dragging'); document.querySelectorAll('.photo-row.drag-over').forEach((el) => el.classList.remove('drag-over')); });
-      row.addEventListener('dragover', (event) => { event.preventDefault(); row.classList.add('drag-over'); });
-      row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+      row.addEventListener('dragend', () => { row.classList.remove('dragging'); document.querySelectorAll('.photo-row.drag-before,.photo-row.drag-after').forEach((el) => el.classList.remove('drag-before','drag-after')); });
+      row.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        const rect = row.getBoundingClientRect();
+        const after = event.clientY > rect.top + rect.height / 2;
+        row.dataset.dropPosition = after ? 'after' : 'before';
+        row.classList.toggle('drag-after', after); row.classList.toggle('drag-before', !after);
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('drag-before','drag-after'));
       row.addEventListener('drop', (event) => {
-        event.preventDefault(); row.classList.remove('drag-over');
+        event.preventDefault(); row.classList.remove('drag-before','drag-after');
         const from = state.dragIndex;
-        if (from === null || from === index) return;
+        if (from === null) return;
+        let target = index + (row.dataset.dropPosition === 'after' ? 1 : 0);
+        if (from < target) target -= 1;
+        if (from === target) return;
         const [moved] = state.items.splice(from, 1);
-        state.items.splice(index, 0, moved);
-        state.selected = index;
+        state.items.splice(target, 0, moved);
+        state.selected = target;
         state.dragIndex = null;
         if ($('sortMode')) $('sortMode').value = 'manual';
         state.lastHealthResult = null;
@@ -1554,6 +2176,7 @@
     const history = $('historyStatus');
     if (history) history.textContent = `復原 ${state.historyUndo.length}｜重做 ${state.historyRedo.length}｜最多 30 個操作階段`;
     updateButtons();
+    updateSmartSections();
   }
 
   function cropCss(crop) {
@@ -1576,13 +2199,19 @@
       $('note').value = '';
       $('photoName').value = '';
       $('photoLocation').value = '';
+      if ($('photoSection')) $('photoSection').value = '';
+      if ($('photoTags')) $('photoTags').value = '';
+      if ($('compareGroup')) $('compareGroup').value = '';
+      if ($('compareRole')) $('compareRole').value = '';
       $('rotateLabel').textContent = '目前：0°';
       $('cropSummary').textContent = '裁切：無';
       if ($('photoMeta')) $('photoMeta').textContent = '拍攝時間／來源資料夾：—';
+      if ($('annotationCount')) $('annotationCount').textContent = '尚無註記';
       preview.className = 'preview fit';
       preview.innerHTML = '<span class="placeholder">尚未選取照片</span>';
       $('zoomLabel').textContent = '—';
       updateButtons();
+      updateSmartSections();
       return;
     }
     const item = state.items[state.selected];
@@ -1593,7 +2222,12 @@
     $('description').value = item.description || '';
     $('note').value = item.note || '';
     $('photoLocation').value = item.location || '';
+    if ($('photoSection')) $('photoSection').value = item.section || '';
+    if ($('photoTags')) $('photoTags').value = item.tags || '';
+    if ($('compareGroup')) $('compareGroup').value = item.compareGroup || '';
+    if ($('compareRole')) $('compareRole').value = item.compareRole || '';
     $('rotateLabel').textContent = `目前：${item.rotation || 0}°`;
+    if ($('annotationCount')) $('annotationCount').textContent = annotationCountText(item);
     if ($('photoMeta')) {
       const metaParts = [`拍攝時間：${item.capturedAt ? formatCapturedAt(item.capturedAt) : '未知'}`];
       if (item.captureSource) metaParts.push(`來源：${item.captureSource === 'exif' ? 'EXIF' : item.captureSource === 'file' ? '檔案時間' : item.captureSource}`);
@@ -1778,7 +2412,7 @@
     for (const item of accepted) {
       state.items.push({
         id: uid(), blob: item.blob, originalName: item.originalName, displayName: item.displayName,
-        description: '', note: '', location: autoFolderLocation ? item.suggestedLocation : '', rotation: 0, crop: defaultCrop(), previewUrl: '',
+        description: '', note: '', location: autoFolderLocation ? item.suggestedLocation : '', rotation: 0, crop: defaultCrop(), annotations: [], section: '', tags: '', compareGroup: '', compareRole: '', previewUrl: '', thumbUrl: '',
         sourceFormat: item.sourceFormat || '', sourceBytes: Number(item.sourceBytes || 0), decoder: item.decoder || '',
         sourceDimensions: item.sourceDimensions || '', normalizedAt: item.normalizedAt || '', privacy: item.privacy || { hasExif: false, hasGps: false },
         capturedAt: item.capturedAt || '', captureSource: item.captureSource || '', sourceFolder: item.sourceFolder || '', importOrder: nextImportOrder(),
@@ -1798,8 +2432,10 @@
   }
 
   function revokeStateUrls() {
+    resetThumbnailObserver();
     state.items.forEach((item) => {
       if (item.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(item.previewUrl);
+      item.previewUrl = '';
     });
     if (state.logo?.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(state.logo.previewUrl);
   }
@@ -1864,7 +2500,10 @@
   function batchRotate(delta) {
     const items = getBatchSelectedItems();
     if (!items.length) return setStatus('請先在左側勾選照片。', 'err');
-    items.forEach((item) => { item.rotation = ((Number(item.rotation || 0) + delta) % 360 + 360) % 360; });
+    items.forEach((item) => {
+      item.rotation = ((Number(item.rotation || 0) + delta) % 360 + 360) % 360;
+      item.annotations = rotateAnnotations(item.annotations, delta);
+    });
     showSelected(); renderList();
     setStatus(`已旋轉 ${items.length} 張照片。`, 'ok'); scheduleAutosave();
   }
@@ -1983,9 +2622,10 @@
       photos: state.items.map((item) => ({
         id: item.id, blob: item.blob, original_name: item.originalName, display_name: item.displayName,
         description: item.description || '', note: item.note || '', location: item.location || '', rotation: item.rotation || 0,
-        crop: clampCrop(item.crop), source_format: item.sourceFormat || '', source_bytes: Number(item.sourceBytes || 0),
+        crop: clampCrop(item.crop), annotations: sanitizeAnnotations(item.annotations), source_format: item.sourceFormat || '', source_bytes: Number(item.sourceBytes || 0),
         decoder: item.decoder || '', source_dimensions: item.sourceDimensions || '', normalized_at: item.normalizedAt || '', privacy: item.privacy || { hasExif: false, hasGps: false },
         captured_at: item.capturedAt || '', capture_source: item.captureSource || '', source_folder: item.sourceFolder || '', import_order: Number(item.importOrder || 0),
+        section: item.section || '', tags: item.tags || '', compare_group: item.compareGroup || '', compare_role: item.compareRole || '',
       })),
       logo: state.logo ? { name: state.logo.name, blob: state.logo.blob } : null,
       saved_at: new Date().toISOString(),
@@ -2000,8 +2640,9 @@
       meta: metaPayload(), quick_notes: [...state.quickNotes],
       photos: state.items.map((item) => ({
         id: item.id, display_name: item.displayName, description: item.description || '',
-        note: item.note || '', location: item.location || '', rotation: item.rotation || 0, crop: clampCrop(item.crop),
+        note: item.note || '', location: item.location || '', rotation: item.rotation || 0, crop: clampCrop(item.crop), annotations: sanitizeAnnotations(item.annotations),
         captured_at: item.capturedAt || '', capture_source: item.captureSource || '', source_folder: item.sourceFolder || '', import_order: Number(item.importOrder || 0),
+        section: item.section || '', tags: item.tags || '', compare_group: item.compareGroup || '', compare_role: item.compareRole || '',
       })),
     };
   }
@@ -2053,7 +2694,7 @@
     if (!data) return '';
     return JSON.stringify({
       meta: data.meta || {}, quick_notes: data.quick_notes || [], selected: data.selected, selected_ids: data.selected_ids || [],
-      photos: (data.photos || []).map((p) => ({ id: p.id, display_name: p.display_name || p.displayName || '', description: p.description || '', note: p.note || '', location: p.location || '', rotation: Number(p.rotation || 0), crop: clampCrop(p.crop), captured_at: p.captured_at || '', source_folder: p.source_folder || '', import_order: Number(p.import_order || 0) })),
+      photos: (data.photos || []).map((p) => ({ id: p.id, display_name: p.display_name || p.displayName || '', description: p.description || '', note: p.note || '', location: p.location || '', rotation: Number(p.rotation || 0), crop: clampCrop(p.crop), annotations: sanitizeAnnotations(p.annotations), captured_at: p.captured_at || '', source_folder: p.source_folder || '', import_order: Number(p.import_order || 0), section: p.section || '', tags: p.tags || '', compare_group: p.compare_group || '', compare_role: p.compare_role || '' })),
     });
   }
 
@@ -2103,6 +2744,7 @@
   }
 
   async function saveAutosaveNow() {
+    renderTopAutosaveBadge();
     if (state.restoring || !state.autosaveEnabled) return true;
     if (state.autosaveInFlight) return state.autosaveInFlight;
     state.autosaveInFlight = (async () => {
@@ -2131,8 +2773,10 @@
         return false;
       } finally {
         state.autosaveInFlight = null;
+        renderTopAutosaveBadge();
       }
     })();
+    renderTopAutosaveBadge();
     return state.autosaveInFlight;
   }
 
@@ -2146,7 +2790,8 @@
     }
     if (!state.autosaveEnabled || state.restoring) return;
     writeRecoveryJournal();
-    state.autosaveTimer = setTimeout(saveAutosaveNow, AUTOSAVE_DELAY_MS);
+    state.autosaveTimer = setTimeout(() => { state.autosaveTimer = null; renderTopAutosaveBadge(); saveAutosaveNow(); }, AUTOSAVE_DELAY_MS);
+    renderTopAutosaveBadge();
   }
 
   async function readAutosave() {
@@ -2235,12 +2880,13 @@
           originalName: photo.original_name || photo.originalName || 'photo.jpg',
           displayName: photo.display_name || photo.displayName || photo.original_name || 'photo.jpg',
           description: photo.description || '', note: photo.note || '', location: photo.location || '', rotation: Number(photo.rotation || 0) % 360,
-          crop: clampCrop(photo.crop), previewUrl: '',
+          crop: clampCrop(photo.crop), annotations: sanitizeAnnotations(photo.annotations), previewUrl: '', thumbUrl: '',
           sourceFormat: photo.source_format || '', sourceBytes: Number(photo.source_bytes || 0), decoder: photo.decoder || '',
           sourceDimensions: photo.source_dimensions || '', normalizedAt: photo.normalized_at || '',
           privacy: isPlainObject(photo.privacy) ? { hasExif: Boolean(photo.privacy.hasExif), hasGps: Boolean(photo.privacy.hasGps) } : { hasExif: false, hasGps: false },
           capturedAt: String(photo.captured_at || photo.capturedAt || ''), captureSource: String(photo.capture_source || photo.captureSource || ''),
           sourceFolder: String(photo.source_folder || photo.sourceFolder || ''), importOrder: Number(photo.import_order || photo.importOrder || state.items.length + 1),
+          section: String(photo.section || ''), tags: String(photo.tags || ''), compareGroup: String(photo.compare_group || photo.compareGroup || ''), compareRole: ['before','after'].includes(photo.compare_role || photo.compareRole) ? String(photo.compare_role || photo.compareRole) : '',
         });
       }
       state.importSequence = state.items.reduce((max, item) => Math.max(max, Number(item.importOrder || 0)), 0);
@@ -2252,11 +2898,17 @@
       $('orgName').value = meta.org_name || '';
       $('title').value = meta.title || '照片紀錄表';
       $('caseName').value = meta.case || '';
+      if ($('caseNumber')) $('caseNumber').value = meta.case_no || '';
       $('recordDate').value = meta.date || localDateString();
       $('location').value = meta.location || '';
       $('perPage').value = String(meta.per_page || 2);
       $('cover').checked = Boolean(meta.cover);
       $('includePageNumber').checked = Boolean(meta.page_numbers);
+      if ($('watermarkEnabled')) $('watermarkEnabled').checked = Boolean(meta.watermark_enabled);
+      if ($('watermarkText')) $('watermarkText').value = meta.watermark_text || '';
+      if ($('smartLongSplit')) $('smartLongSplit').checked = meta.smart_long_split !== false;
+      state.caseArchived = Boolean(meta.archived);
+      state.caseArchivedAt = meta.archived_at || '';
       if (state.logo?.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(state.logo.previewUrl);
       if (data.logo?.blob instanceof Blob) {
         state.logo = { name: data.logo.name || 'logo.png', blob: data.logo.blob, previewUrl: URL.createObjectURL(data.logo.blob) };
@@ -2270,6 +2922,7 @@
       renderLogo();
       renderList();
       showSelected();
+      applyArchiveMode();
     } finally {
       state.restoring = false;
     }
@@ -2329,10 +2982,11 @@
         manifest.photos.push({
           id: item.id, file: path, original_name: item.originalName, display_name: item.displayName,
           description: item.description || '', note: item.note || '', location: item.location || '',
-          rotation: item.rotation || 0, crop: clampCrop(item.crop), media_type: validated.magic.mime,
+          rotation: item.rotation || 0, crop: clampCrop(item.crop), annotations: sanitizeAnnotations(item.annotations), media_type: validated.magic.mime,
           source_format: item.sourceFormat || '', source_bytes: Number(item.sourceBytes || 0), decoder: item.decoder || '',
           source_dimensions: item.sourceDimensions || '', normalized_at: item.normalizedAt || '', privacy: item.privacy || { hasExif: false, hasGps: false },
         captured_at: item.capturedAt || '', capture_source: item.captureSource || '', source_folder: item.sourceFolder || '', import_order: Number(item.importOrder || 0),
+        section: item.section || '', tags: item.tags || '', compare_group: item.compareGroup || '', compare_role: item.compareRole || '',
         });
       }
       if (state.logo) {
@@ -2469,9 +3123,10 @@
     assertProjectString(raw.app_version ?? raw.version, 'app_version', 80);
     if (raw.meta !== undefined && !isPlainObject(raw.meta)) throw new Error('meta 必須是物件。');
     const meta = raw.meta || {};
-    for (const [key, label] of [['org_name','機關名稱'],['title','文件標題'],['case','案件／主題'],['date','紀錄日期'],['location','地點']]) assertProjectString(meta[key], label, MAX_META_TEXT_CHARS);
+    for (const [key, label] of [['org_name','機關名稱'],['title','文件標題'],['case','案件／主題'],['case_no','案件編號'],['date','紀錄日期'],['location','地點'],['watermark_text','浮水印']]) assertProjectString(meta[key], label, MAX_META_TEXT_CHARS);
+    if (meta.archived_at !== undefined) assertProjectString(meta.archived_at, '封存時間', 64, { optional: true });
     if (meta.per_page !== undefined && (typeof meta.per_page !== 'number' || ![1, 2, 4].includes(meta.per_page))) throw new Error('per_page 必須是數字 1、2 或 4。');
-    for (const key of ['cover', 'page_numbers']) if (meta[key] !== undefined && typeof meta[key] !== 'boolean') throw new Error(`${key} 必須是布林值。`);
+    for (const key of ['cover', 'page_numbers', 'watermark_enabled', 'smart_long_split', 'archived']) if (meta[key] !== undefined && typeof meta[key] !== 'boolean') throw new Error(`${key} 必須是布林值。`);
 
     if (raw.quick_notes !== undefined) {
       if (!Array.isArray(raw.quick_notes)) throw new Error('quick_notes 必須是陣列。');
@@ -2512,6 +3167,8 @@
       if (photo.captured_at !== undefined) assertProjectString(photo.captured_at, `photos[${index}].captured_at`, 64, { optional: true });
       if (photo.capture_source !== undefined) assertProjectString(photo.capture_source, `photos[${index}].capture_source`, 32, { optional: true });
       if (photo.source_folder !== undefined) assertProjectString(photo.source_folder, `photos[${index}].source_folder`, MAX_META_TEXT_CHARS, { optional: true });
+      for (const [key, max] of [['section', MAX_META_TEXT_CHARS], ['tags', MAX_META_TEXT_CHARS], ['compare_group', MAX_META_TEXT_CHARS], ['compare_role', 16]]) if (photo[key] !== undefined) assertProjectString(photo[key], `photos[${index}].${key}`, max, { optional: true });
+      if (photo.compare_role && !['before','after'].includes(photo.compare_role)) throw new Error(`photos[${index}].compare_role 不合法。`);
       if (photo.import_order !== undefined && (!Number.isInteger(Number(photo.import_order)) || Number(photo.import_order) < 0 || Number(photo.import_order) > 10000000)) throw new Error(`photos[${index}].import_order 不合法。`);
       if (photo.privacy !== undefined) {
         if (!isPlainObject(photo.privacy)) throw new Error(`photos[${index}].privacy 必須是物件。`);
@@ -2523,6 +3180,14 @@
       if (photo.crop !== undefined) {
         if (!isPlainObject(photo.crop)) throw new Error(`photos[${index}].crop 必須是物件。`);
         for (const key of ['left', 'top', 'right', 'bottom']) if (photo.crop[key] !== undefined && (typeof photo.crop[key] !== 'number' || !Number.isFinite(photo.crop[key]))) throw new Error(`photos[${index}].crop.${key} 不合法。`);
+      }
+      if (photo.annotations !== undefined) {
+        if (!Array.isArray(photo.annotations) || photo.annotations.length > MAX_ANNOTATIONS_PER_PHOTO) throw new Error(`photos[${index}].annotations 不合法。`);
+        photo.annotations.forEach((ann, annIndex) => {
+          if (!isPlainObject(ann) || !['rect','arrow','text','blur','redact'].includes(ann.type)) throw new Error(`photos[${index}].annotations[${annIndex}] 不合法。`);
+          for (const key of ['x1','y1','x2','y2']) if (!Number.isFinite(Number(ann[key])) || Number(ann[key]) < 0 || Number(ann[key]) > 1) throw new Error(`photos[${index}].annotations[${annIndex}].${key} 不合法。`);
+          if (ann.type === 'text') assertProjectString(ann.text, `photos[${index}].annotations[${annIndex}].text`, MAX_ANNOTATION_TEXT_CHARS, { optional: false });
+        });
       }
     });
     if (schema >= 2 && Array.isArray(raw.selected_ids)) {
@@ -2644,10 +3309,11 @@
           note: p.note || '',
           location: p.location || '',
           rotation: p.rotation || 0,
-          crop: clampCrop(p.crop),
+          crop: clampCrop(p.crop), annotations: sanitizeAnnotations(p.annotations),
           source_format: p.source_format || '', source_bytes: Number(p.source_bytes || 0), decoder: p.decoder || '',
           source_dimensions: p.source_dimensions || '', normalized_at: p.normalized_at || '', privacy: p.privacy || { hasExif: false, hasGps: false },
         captured_at: p.captured_at || '', capture_source: p.capture_source || '', source_folder: p.source_folder || '', import_order: Number(p.import_order || 0),
+        section: p.section || '', tags: p.tags || '', compare_group: p.compare_group || '', compare_role: p.compare_role || '',
         });
       }
       let logo = null;
@@ -2764,18 +3430,22 @@
     return { lines, size, lineHeight, truncated: all.length > count };
   }
 
-  async function drawReportBlock(ctx, item, processed, number, meta, x, y, w, h, compact = false) {
+  async function drawReportBlock(ctx, item, processed, number, meta, x, y, w, h, compact = false, segmentSuffix = '') {
     ctx.strokeStyle = '#c8d3e1'; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
     const headerH = compact ? 42 : 48;
     ctx.fillStyle = '#edf3fa'; ctx.fillRect(x, y, w, headerH);
     const headerSize = compact ? 16 : 18;
     canvasFont(ctx, headerSize, true); ctx.fillStyle = '#173e65';
-    let header = `照片 ${String(number).padStart(2, '0')}｜${item.displayName}`;
+    let header = `照片 ${String(number).padStart(2, '0')}${segmentSuffix}｜${item.displayName}`;
     while (header.length > 4 && ctx.measureText(header).width > w - 24) header = `${header.slice(0, -2)}…`;
     ctx.fillText(header, x + 12, y + Math.max(5, (headerH - headerSize) / 2 - 1));
 
     const details = [
       ['案件／主題', meta.case || '—'],
+      ...(meta.case_no ? [['案件編號', meta.case_no]] : []),
+      ...(item.section ? [['章節', item.section]] : []),
+      ...(item.compareGroup && item.compareRole ? [['前後比較', `${item.compareGroup}｜${item.compareRole === 'before' ? '改善前' : '改善後'}`]] : []),
+      ...(item.tags ? [['標籤', item.tags]] : []),
       ['紀錄日期', meta.date || '—'],
       ['地點', effectiveLocation(item, meta) || '—'],
       ['照片說明', item.description || '（未填寫）'],
@@ -2830,7 +3500,7 @@
       const boxX = 200, boxW = pageWidth - 400;
       ctx.strokeStyle = '#d4dde7'; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.moveTo(boxX, y); ctx.lineTo(boxX + boxW, y); ctx.stroke(); y += 36;
-      const details = [['案件／主題', meta.case || '—'], ['紀錄日期', meta.date || '—'], ['地點', meta.location || '—']];
+      const details = [['案件／主題', meta.case || '—'], ...(meta.case_no ? [['案件編號', meta.case_no]] : []), ['紀錄日期', meta.date || '—'], ['地點', meta.location || '—']];
       canvasFont(ctx, 25, false); ctx.fillStyle = '#26384a';
       for (const [label, value] of details) { ctx.fillText(`${label}：${value}`, boxX + 20, y); y += 58; }
       drawCanvasPageNumber(ctx, 1, totalPages, pageWidth, pageHeight);
@@ -2839,8 +3509,8 @@
 
     const plan = suppliedPlan || buildPhotoPagePlan(meta);
     const reportIndex = pageIndex - coverOffset;
-    const indices = plan[reportIndex] || [];
-    const layoutCount = Math.max(1, indices.length);
+    const entries = plan[reportIndex] || [];
+    const layoutCount = Math.max(1, entries.length);
     const pageMeta = { ...meta, per_page: layoutCount };
 
     if (!meta.cover && state.logo) {
@@ -2862,20 +3532,20 @@
     if (layoutCount >= 3) {
       const bw = (pageWidth - margin * 2 - gap) / 2;
       const bh = (gridH - gap) / 2;
-      for (let local = 0; local < indices.length; local += 1) {
-        const i = indices[local];
+      for (let local = 0; local < entries.length; local += 1) {
+        const entry = entries[local]; const i = entry.index;
         const x = margin + (local % 2) * (bw + gap);
         const y = gridTop + Math.floor(local / 2) * (bh + gap);
-        const processed = await processImage(state.items[i], 1450, 0.88);
-        await drawReportBlock(ctx, state.items[i], processed, i + 1, pageMeta, x, y, bw, bh, true);
+        const processed = await processOutputEntry(entry, 1450, 0.88, meta);
+        await drawReportBlock(ctx, state.items[i], processed, i + 1, pageMeta, x, y, bw, bh, true, outputEntrySuffix(entry));
       }
     } else {
       const bh = (gridH - gap * (layoutCount - 1)) / layoutCount;
-      for (let local = 0; local < indices.length; local += 1) {
-        const i = indices[local];
+      for (let local = 0; local < entries.length; local += 1) {
+        const entry = entries[local]; const i = entry.index;
         const y = gridTop + local * (bh + gap);
-        const processed = await processImage(state.items[i], layoutCount === 1 ? 1900 : 1750, 0.89);
-        await drawReportBlock(ctx, state.items[i], processed, i + 1, pageMeta, margin, y, pageWidth - margin * 2, bh, false);
+        const processed = await processOutputEntry(entry, layoutCount === 1 ? 1900 : 1750, 0.89, meta);
+        await drawReportBlock(ctx, state.items[i], processed, i + 1, pageMeta, margin, y, pageWidth - margin * 2, bh, false, outputEntrySuffix(entry));
       }
     }
     drawCanvasPageNumber(ctx, pageIndex + 1, totalPages, pageWidth, pageHeight);
@@ -2906,7 +3576,7 @@
       const total = plan.length + (meta.cover ? 1 : 0);
       const wrap = $('previewPages'); wrap.innerHTML = '';
       const adjusted = layoutAdjustmentCount(meta);
-      if (adjusted) wrap.appendChild(createEl('div', 'layout-adjust-note', `有 ${adjusted} 頁因照片說明較長，自動降低每頁照片數以保留完整文字。`));
+      if (adjusted) wrap.appendChild(createEl('div', 'layout-adjust-note', `有 ${adjusted} 頁因長文字或超長圖片，自動調整為較寬鬆版面以保留可讀性。`));
       for (let i = 0; i < total; i += 1) {
         $('loadingText').textContent = `正在產生第 ${i + 1} / ${total} 頁…`;
         const canvas = await renderPageCanvas(i, meta, total, 1240, 1754, plan);
@@ -3101,8 +3771,8 @@
 
   function countDocxInvalidInputChars() {
     const meta = metaPayload();
-    const values = [meta.org_name, meta.title, meta.case, meta.date, meta.location];
-    for (const item of state.items) values.push(item.displayName, item.description, item.note, item.location);
+    const values = [meta.org_name, meta.title, meta.case, meta.case_no, meta.date, meta.location, meta.watermark_text];
+    for (const item of state.items) values.push(item.displayName, item.description, item.note, item.location, item.section, item.tags, item.compareGroup);
     return values.reduce((sum, value) => sum + countInvalidXml10Chars(value), 0);
   }
 
@@ -3125,10 +3795,15 @@
     return `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${docPrId}" name="${xmlEscape(name)}"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="${xmlEscape(name)}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
   }
 
-  function wordPhotoBlock(item, image, number, meta) {
-    const title = wordParagraph(wordRun(`照片 ${String(number).padStart(2, '0')}｜${item.displayName}`, { bold: true, size: 19, color: '173E65' }));
+  function wordPhotoBlock(item, image, number, meta, segmentSuffix = '') {
+    const title = wordParagraph(wordRun(`照片 ${String(number).padStart(2, '0')}${segmentSuffix}｜${item.displayName}`, { bold: true, size: 19, color: '173E65' }));
     const imgP = wordParagraph(wordImage(image.rId, image.name, image.displayW, image.displayH, image.docPrId), { align: 'center' });
-    const details = [['案件／主題', meta.case || '—'], ['紀錄日期', meta.date || '—'], ['地點', effectiveLocation(item, meta) || '—'], ['照片說明', item.description || '（未填寫）']];
+    const details = [['案件／主題', meta.case || '—']];
+    if (meta.case_no) details.push(['案件編號', meta.case_no]);
+    if (item.section) details.push(['章節', item.section]);
+    if (item.compareGroup && item.compareRole) details.push(['前後比較', `${item.compareGroup}｜${item.compareRole === 'before' ? '改善前' : '改善後'}`]);
+    if (item.tags) details.push(['標籤', item.tags]);
+    details.push(['紀錄日期', meta.date || '—'], ['地點', effectiveLocation(item, meta) || '—'], ['照片說明', item.description || '（未填寫）']);
     if (item.note) details.push(['備註', item.note]);
     const fontSize = meta.per_page >= 3 ? 15 : (itemTextWeight(item, meta) > 220 ? 15 : 17);
     const info = details.map(([label, value]) => wordParagraph(wordRun(`${label}：`, { bold: true, size: fontSize }) + wordRun(value, { size: fontSize }))).join('');
@@ -3142,11 +3817,11 @@
     if (!window.JSZip) throw new Error('JSZip 尚未載入。');
     const meta = metaPayload();
     const pagePlan = buildPhotoPagePlan(meta);
-    const layoutByIndex = new Map();
-    pagePlan.forEach((page) => page.forEach((index) => layoutByIndex.set(index, page.length)));
+    const layoutByEntry = new Map();
+    pagePlan.forEach((page) => page.forEach((entry) => layoutByEntry.set(outputEntryKey(entry), page.length)));
     const zip = new JSZip();
     const relationships = [];
-    const images = [];
+    const images = new Map();
     let nextRel = 10;
     let nextDocPr = 1;
 
@@ -3161,19 +3836,20 @@
       logoImage = { rId, name, displayW: dims.width, displayH: dims.height, docPrId: nextDocPr++ };
     }
 
-    for (let i = 0; i < state.items.length; i += 1) {
-      const layoutCount = layoutByIndex.get(i) || meta.per_page;
-      const weight = itemTextWeight(state.items[i], meta);
+    for (const entry of pagePlan.flat()) {
+      const i = entry.index; const item = state.items[i]; const key = outputEntryKey(entry);
+      const layoutCount = layoutByEntry.get(key) || meta.per_page;
+      const weight = itemTextWeight(item, meta);
       let limits = layoutCount === 1 ? { w: 600, h: 610 } : layoutCount === 2 ? { w: 595, h: 235 } : { w: 560, h: 105 };
       if (layoutCount === 1 && weight > 220) limits = { w: 590, h: 430 };
       if (layoutCount === 2 && weight > 95) limits = { w: 585, h: 190 };
-      const processed = await processImage(state.items[i], 1800, 0.89);
+      const processed = await processOutputEntry(entry, 1800, 0.89, meta);
       const rId = `rId${nextRel++}`;
-      const name = `photo${String(i + 1).padStart(4, '0')}.jpg`;
+      const name = `photo${String(i + 1).padStart(4, '0')}${entry.segmentCount > 1 ? `_part${entry.segment + 1}` : ''}.jpg`;
       zip.file(`word/media/${name}`, processed.blob);
       relationships.push(`<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${name}"/>`);
       const dims = fitDimensions(processed.width, processed.height, limits.w, limits.h);
-      images.push({ rId, name, displayW: dims.width, displayH: dims.height, docPrId: nextDocPr++ });
+      images.set(key, { rId, name, displayW: dims.width, displayH: dims.height, docPrId: nextDocPr++ });
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
 
@@ -3182,7 +3858,7 @@
       if (logoImage) body += wordParagraph(wordImage(logoImage.rId, logoImage.name, logoImage.displayW, logoImage.displayH, logoImage.docPrId), { align: 'center', after: 160 });
       if (meta.org_name) body += wordParagraph(wordRun(meta.org_name, { size: 32, bold: true, color: '3B5369' }), { align: 'center', after: 120 });
       body += wordParagraph(wordRun(meta.title, { size: 48, bold: true, color: '123A63' }), { align: 'center', before: 180, after: 360 });
-      for (const [label, value] of [['案件／主題', meta.case || '—'], ['紀錄日期', meta.date || '—'], ['地點', meta.location || '—']]) {
+      for (const [label, value] of [['案件／主題', meta.case || '—'], ...(meta.case_no ? [['案件編號', meta.case_no]] : []), ['紀錄日期', meta.date || '—'], ['地點', meta.location || '—']]) {
         body += wordParagraph(wordRun(`${label}：`, { size: 26, bold: true }) + wordRun(value, { size: 26 }), { after: 120 });
       }
       body += wordParagraph('', { pageBreak: true });
@@ -3193,8 +3869,9 @@
     for (let pageIndex = 0; pageIndex < pagePlan.length; pageIndex += 1) {
       const page = pagePlan[pageIndex];
       const pageMeta = { ...meta, per_page: Math.max(1, page.length) };
-      for (const i of page) {
-        body += wordPhotoBlock(state.items[i], images[i], i + 1, pageMeta);
+      for (const entry of page) {
+        const i = entry.index;
+        body += wordPhotoBlock(state.items[i], images.get(outputEntryKey(entry)), i + 1, pageMeta, outputEntrySuffix(entry));
         body += wordParagraph('', { after: page.length === 2 ? 25 : 40 });
       }
       if (pageIndex < pagePlan.length - 1) body += wordParagraph('', { pageBreak: true });
@@ -3308,6 +3985,11 @@
     $('orgName').value = '';
     $('title').value = '照片紀錄表';
     $('caseName').value = '';
+    if ($('caseNumber')) $('caseNumber').value = '';
+    if ($('watermarkEnabled')) $('watermarkEnabled').checked = false;
+    if ($('watermarkText')) $('watermarkText').value = '';
+    if ($('smartLongSplit')) $('smartLongSplit').checked = true;
+    state.caseArchived = false; state.caseArchivedAt = '';
     $('recordDate').value = localDateString();
     $('location').value = '';
     $('perPage').value = '2';
@@ -3358,9 +4040,11 @@
       if (state.selected < 0) return;
       const [removed] = state.items.splice(state.selected, 1);
       if (removed?.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(removed.previewUrl);
+      if (removed?.thumbUrl?.startsWith('blob:')) URL.revokeObjectURL(removed.thumbUrl);
       if (removed?.id) state.selectedIds.delete(removed.id);
       state.selected = Math.min(state.selected, state.items.length - 1);
       renderList(); showSelected(); scheduleAutosave();
+      showActionToast(`已移除「${removed?.displayName || '照片'}」`, true);
     });
     $('clearBtn').addEventListener('click', async () => {
       if (state.items.length && !confirm('確定要清除目前所有照片與編輯內容嗎？')) return;
@@ -3393,11 +4077,13 @@
     $('rotateLeftBtn').addEventListener('click', () => {
       if (state.selected < 0) return;
       state.items[state.selected].rotation = (state.items[state.selected].rotation + 270) % 360;
+      state.items[state.selected].annotations = rotateAnnotations(state.items[state.selected].annotations, -90);
       showSelected(); scheduleAutosave();
     });
     $('rotateRightBtn').addEventListener('click', () => {
       if (state.selected < 0) return;
       state.items[state.selected].rotation = (state.items[state.selected].rotation + 90) % 360;
+      state.items[state.selected].annotations = rotateAnnotations(state.items[state.selected].annotations, 90);
       showSelected(); scheduleAutosave();
     });
     $('batchRotateLeftBtn').addEventListener('click', () => batchRotate(-90));
@@ -3420,11 +4106,61 @@
       $('description').value = state.items[state.selected].description;
       setStatus('已複製上一張照片說明。', 'ok'); scheduleAutosave();
     });
+    $('copyPrevLocationBtn').addEventListener('click', () => {
+      if (state.selected <= 0) return;
+      state.items[state.selected].location = state.items[state.selected - 1].location || '';
+      $('photoLocation').value = state.items[state.selected].location;
+      setStatus('已複製上一張照片地點。', 'ok'); scheduleAutosave();
+    });
+    $('copyPrevNoteBtn').addEventListener('click', () => {
+      if (state.selected <= 0) return;
+      state.items[state.selected].note = state.items[state.selected - 1].note || '';
+      $('note').value = state.items[state.selected].note;
+      setStatus('已複製上一張備註。', 'ok'); scheduleAutosave();
+    });
     $('addQuickNoteBtn').addEventListener('click', () => {
       const value = $('newQuickNote').value.trim();
       if (!value) return;
       if (!state.quickNotes.includes(value)) state.quickNotes.push(value);
       $('newQuickNote').value = ''; renderQuickNotes(); scheduleAutosave();
+    });
+
+
+    ['photoSection','photoTags','compareGroup','compareRole'].forEach((id) => $(id)?.addEventListener(id === 'compareRole' ? 'change' : 'input', () => {
+      const item = state.items[state.selected]; if (!item || state.caseArchived) return;
+      item.section = $('photoSection').value.trim(); item.tags = $('photoTags').value.trim(); item.compareGroup = $('compareGroup').value.trim(); item.compareRole = $('compareRole').value;
+      state.lastHealthResult = null; renderList(); scheduleAutosave();
+    }));
+    ['caseNumber','watermarkText'].forEach((id) => $(id)?.addEventListener('input', scheduleAutosave));
+    $('watermarkEnabled')?.addEventListener('change', scheduleAutosave);
+    $('smartLongSplit')?.addEventListener('change', scheduleAutosave);
+    $('archiveProjectBtn')?.addEventListener('click', toggleArchiveProject);
+    $('annotationBtn').addEventListener('click', openAnnotationEditor);
+    $('closeAnnotationBtn').addEventListener('click', closeAnnotationEditor);
+    $('annotationModal').addEventListener('click', (event) => { if (event.target === $('annotationModal')) closeAnnotationEditor(); });
+    document.querySelectorAll('[data-annotation-tool]').forEach((btn) => btn.addEventListener('click', () => setAnnotationTool(btn.dataset.annotationTool)));
+    $('annotationCanvas').addEventListener('pointerdown', beginAnnotationPointer);
+    $('annotationCanvas').addEventListener('pointermove', moveAnnotationPointer);
+    $('annotationCanvas').addEventListener('pointerup', endAnnotationPointer);
+    $('annotationCanvas').addEventListener('pointercancel', cancelAnnotationPointer);
+    $('annotationUndoBtn').addEventListener('click', () => { state.annotationDraft.pop(); state.annotationSelected = Math.min(state.annotationSelected, state.annotationDraft.length - 1); renderAnnotationCanvas(); });
+    $('annotationDeleteBtn')?.addEventListener('click', deleteSelectedAnnotation);
+    $('annotationEditTextBtn')?.addEventListener('click', editSelectedAnnotationText);
+    $('annotationCanvas').addEventListener('dblclick', () => editSelectedAnnotationText());
+    $('annotationClearBtn').addEventListener('click', () => { if (state.annotationDraft.length && !confirm('確定清除這張照片的全部註記嗎？')) return; state.annotationDraft = []; state.annotationSelected = -1; renderAnnotationCanvas(); });
+    $('annotationSaveBtn').addEventListener('click', () => {
+      const targetId = state.annotationTargetId;
+      const targetIndex = state.items.findIndex((item) => item.id === targetId);
+      if (targetIndex < 0) {
+        closeAnnotationEditor();
+        setStatus('註記目標照片已不存在，未套用任何變更。', 'err');
+        return;
+      }
+      state.items[targetIndex].annotations = sanitizeAnnotations(state.annotationDraft);
+      const count = state.items[targetIndex].annotations.length;
+      state.selected = targetIndex;
+      closeAnnotationEditor(); showSelected(); renderList(); scheduleAutosave();
+      showActionToast(count ? `已套用 ${count} 個照片註記` : '已清除照片註記', true);
     });
 
     $('cropBtn').addEventListener('click', openCrop);
@@ -3438,8 +4174,12 @@
     $('resetCropBtn').addEventListener('click', () => setCropControls(defaultCrop()));
     $('applyCropBtn').addEventListener('click', () => {
       if (state.selected < 0) return;
-      state.items[state.selected].crop = getCropControls();
-      $('cropModal').classList.remove('show'); showSelected(); setStatus('已套用照片裁切。', 'ok'); scheduleAutosave();
+      const item = state.items[state.selected];
+      const hadAnnotations = sanitizeAnnotations(item.annotations).length > 0;
+      if (hadAnnotations && !confirm('變更裁切會讓既有註記位置失準。是否清除這張照片的註記並套用裁切？')) return;
+      if (hadAnnotations) item.annotations = [];
+      item.crop = getCropControls();
+      $('cropModal').classList.remove('show'); showSelected(); setStatus(hadAnnotations ? '已套用照片裁切，並清除原有註記。' : '已套用照片裁切。', 'ok'); scheduleAutosave();
     });
 
     $('logoBtn').addEventListener('click', () => $('logoInput').click());
@@ -3527,6 +4267,13 @@
     $('closePreviewBtn').addEventListener('click', closePreview);
     $('previewModal').addEventListener('click', (event) => { if (event.target === $('previewModal')) closePreview(); });
 
+
+    $('actionToastUndoBtn')?.addEventListener('click', () => { $('undoBtn').click(); $('actionToast').classList.remove('show'); $('actionToast').hidden = true; });
+    ['documentSection','singlePhotoSection','batchSection','exportSection'].forEach((id) => {
+      const section = $(id); if (!section) return;
+      section.addEventListener('toggle', () => { section.dataset.userToggled = '1'; });
+    });
+
     $('preflightBtn').addEventListener('click', () => openPreflight(null));
     $('healthBtn').addEventListener('click', runProjectHealthCheck);
     $('closeHealthBtn').addEventListener('click', () => $('healthModal').classList.remove('show'));
@@ -3546,6 +4293,23 @@
       const tag = document.activeElement?.tagName?.toLowerCase();
       const editing = ['input', 'textarea', 'select'].includes(tag) || document.activeElement?.isContentEditable;
       const cmd = event.ctrlKey || event.metaKey;
+      const openModal = document.querySelector('.modal.show');
+      if (openModal) {
+        if (openModal.id === 'annotationModal' && !editing && cmd && event.key.toLowerCase() === 'z') {
+          event.preventDefault(); state.annotationDraft.pop(); state.annotationSelected = Math.min(state.annotationSelected, state.annotationDraft.length - 1); renderAnnotationCanvas(); return;
+        }
+        if (openModal.id === 'annotationModal' && !editing && event.key === 'Delete') { event.preventDefault(); deleteSelectedAnnotation(); return; }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          if (openModal.id === 'annotationModal') closeAnnotationEditor();
+          else if (openModal.id === 'cropModal') $('closeCropBtn')?.click();
+          else if (openModal.id === 'previewModal') $('closePreviewBtn')?.click();
+          else if (openModal.id === 'healthModal') $('closeHealthBtn')?.click();
+          else if (openModal.id === 'preflightModal') $('closePreflightBtn')?.click();
+          else if (openModal.id === 'unsavedModal') $('unsavedCancelBtn')?.click();
+        }
+        return;
+      }
       if (cmd && event.key.toLowerCase() === 's') { event.preventDefault(); saveProject(); return; }
       if (cmd && event.key.toLowerCase() === 'o') { event.preventDefault(); $('projectInput').click(); return; }
       if (!editing && cmd && event.key.toLowerCase() === 'a') { event.preventDefault(); state.items.forEach((item) => state.selectedIds.add(item.id)); renderList(); return; }

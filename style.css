@@ -236,3 +236,29 @@ header p{color:#fff3fb}
   .section-head{gap:10px}
   .section-emoji{width:36px;height:36px;font-size:19px}
 }
+
+/* V3.6 Smart Workflow & Annotation Edition */
+.autosave-top-badge{display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.58);background:rgba(255,255,255,.18);color:#fff;border-radius:999px;padding:6px 9px;font-size:12px;font-weight:900;white-space:nowrap}.autosave-top-badge.ok{background:rgba(241,255,247,.92);color:#367456;border-color:#d4f0df}.autosave-top-badge.saving{background:rgba(255,247,224,.94);color:#8d681a;border-color:#f4dc9e}.autosave-top-badge.err{background:#fff0f1;color:#a53a4d;border-color:#f1bac4}.autosave-top-badge.off{background:rgba(255,255,255,.18);color:#fff}
+
+.photo-thumb{width:52px;height:52px;object-fit:cover;border-radius:11px;border:1px solid #efd6e5;background:#fff6fb;flex:0 0 auto;box-shadow:0 2px 8px rgba(202,132,168,.10)}
+.photo-row{min-height:68px}.photo-row .num{width:30px;height:30px}
+.photo-row.drag-before{box-shadow:inset 0 4px 0 #ef6ba8;background:#fff5fa}.photo-row.drag-after{box-shadow:inset 0 -4px 0 #ef6ba8;background:#fff5fa}
+.photo-row.drag-before::before,.photo-row.drag-after::after{content:'🐾 放這裡';position:absolute;right:10px;background:#ef6ba8;color:#fff;border-radius:999px;padding:2px 7px;font-size:10px;font-weight:900;z-index:2}.photo-row{position:relative}.photo-row.drag-before::before{top:2px}.photo-row.drag-after::after{bottom:2px}
+
+.smart-section{padding:0;overflow:hidden}.smart-section>summary{padding:14px;cursor:pointer;list-style:none;user-select:none;margin:0;background:linear-gradient(135deg,#fff8fc 0%,#fffdf7 100%);border-bottom:1px solid transparent}.smart-section>summary::-webkit-details-marker{display:none}.smart-section>summary::after{content:'＋';margin-left:auto;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#ffe6f2;color:#a95f8c;font-weight:900;flex:0 0 auto}.smart-section[open]>summary::after{content:'−'}.smart-section[open]>summary{border-bottom-color:#f1dce8}.smart-section>summary+*{margin-top:12px}.smart-section[open]{padding:0 14px 14px}.smart-section[open]>summary{margin:0 -14px 12px}.smart-section:not([open]){box-shadow:none}.smart-section:not([open]) .section-head{margin-bottom:0}.smart-section .section-head{align-items:center}.smart-section .section-head>div:nth-child(2){min-width:0;flex:1}.smart-section .section-head p{white-space:normal}
+.annotation-entry{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:10px 0 2px;padding:10px;border-radius:14px;background:linear-gradient(135deg,#fff0f8,#fff9ef);border:1px solid #f0d6e6}.annotation-main-btn{background:#fff!important;border-color:#edb8d2!important;color:#a45181!important}
+.smart-copy-toolbar .btn{flex:1 1 130px}
+
+.action-toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,18px);opacity:0;display:flex;align-items:center;gap:10px;z-index:140;background:#5b3d51;color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:16px;padding:10px 12px 10px 16px;box-shadow:0 12px 32px rgba(70,40,60,.24);transition:.18s ease;max-width:min(620px,92vw)}.action-toast.show{opacity:1;transform:translate(-50%,0)}.action-toast[hidden]{display:none}.action-toast .btn{padding:6px 10px;background:#fff5fa;border-color:#fff;color:#99547f;box-shadow:none}
+
+.preflight-jump-box{margin-top:12px;padding:11px;border:1px solid #f0d0df;background:#fff7fb;border-radius:12px}.preflight-jump-list{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}.preflight-jump-btn{font-size:12px;padding:6px 8px}
+
+.annotation-card{width:min(1280px,97vw);height:min(900px,94vh)}.annotation-toolbar{display:flex;gap:7px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid #f0d6e6;background:#fffafd}.annotation-tool.active{background:#ef8bb7;color:#fff;border-color:#ef8bb7}.annotation-help{padding:8px 14px;background:#fff4f9;color:#8c647a;font-size:12px;border-bottom:1px solid #f0d6e6}.annotation-stage-wrap{flex:1;min-height:0;overflow:auto;background:linear-gradient(135deg,#f6eef4,#f5f1f4);padding:16px;display:flex;align-items:flex-start;justify-content:center}.annotation-stage-wrap canvas{max-width:100%;height:auto;background:#fff;box-shadow:0 10px 30px rgba(55,40,50,.18);touch-action:none;cursor:crosshair;border-radius:6px}
+
+@media(max-width:720px){.photo-thumb{width:46px;height:46px}.photo-row{min-height:60px;padding:7px}.autosave-top-badge{font-size:11px}.annotation-card{height:96vh}.annotation-toolbar .btn{flex:1 1 90px}.smart-section[open]{padding:0 11px 11px}.smart-section>summary{padding:12px}.smart-section[open]>summary{margin:0 -11px 10px}.action-toast{bottom:16px}}
+
+
+/* V3.7 Case Management & Advanced Annotation */
+.case-output-tools,.compare-box,.archive-box{border:1px solid #efd5e4;background:linear-gradient(135deg,#fff8fc,#fffdf7);border-radius:14px;padding:11px;margin:10px 0}.case-output-tools{display:grid;gap:9px}.archive-box{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.archive-btn{border-color:#c7a3bb!important;background:#fff!important;color:#80566f!important}.case-archived .panel{filter:saturate(.88)}.case-archived header::after{content:'🔒 案件已封存';position:fixed;right:18px;bottom:16px;background:#5c4051;color:#fff;border-radius:999px;padding:8px 12px;font-size:12px;font-weight:900;z-index:120;box-shadow:0 8px 22px rgba(50,30,45,.22)}
+.annotation-selection{padding:6px 14px;background:#f3fbfd;color:#28768b;border-bottom:1px solid #d5edf4;font-size:12px;font-weight:800}.redaction-warning{margin:0;padding:8px 14px;background:#fff3f1;color:#8d3f42;border-bottom:1px solid #f0d1cf;font-size:11px;line-height:1.5}.redact-tool{border-color:#555!important;color:#333!important}.annotation-tool.redact-tool.active{background:#222!important;color:#fff!important;border-color:#222!important}.annotation-stage-wrap canvas[data-select-mode="1"]{cursor:move}.compare-box .field{margin-bottom:0}
+.photo-sub{max-width:100%}

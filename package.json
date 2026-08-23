@@ -1,7 +1,7 @@
 {
-  "name": "image-record-assistant-v3-5-2-github-pages",
+  "name": "image-record-assistant-v3-7-case-management-advanced-annotation",
   "private": true,
-  "version": "3.5.2",
+  "version": "3.7.0",
   "type": "module",
   "scripts": {
     "test:e2e": "node tests/e2e.mjs",
