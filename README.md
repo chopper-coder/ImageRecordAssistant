@@ -1,10 +1,21 @@
-# 圖片紀錄整理助手 V3.7
+# 圖片紀錄整理助手 V3.7.2
 
-**Case Management & Advanced Annotation Edition**
+**HEIC Fast Import & Parallel Decode Edition**
 
 正式網站：<https://chopper-coder.github.io/ImageRecordAssistant/>
 
-這是 GitHub Clean Package，只保留目前 V3.7 網站與部署真正需要的檔案。
+這是 GitHub Clean Package，延續 V3.7.1 的大量照片穩定性，並針對 iPhone HEIC / HEIF 大量匯入速度做優化。
+
+## V3.7.2 重點
+
+- HEIC 解碼改為 **1～3 路持久 Worker Pool**，依裝置記憶體與 CPU 自動調整。
+- Worker 會重複使用，不再每張 HEIC 都重新建立／銷毀解碼器。
+- 瀏覽器原生 HEIC 支援只探測一次；若確認不支援，後續直接走 Worker，不再每張重試。
+- HEIC → JPEG 後改用 **Header + 尺寸安全驗證**，移除第二次完整 JPEG decode。
+- 大量 HEIC 以平行工作佇列處理，保持原始匯入順序。
+- 取消匯入會同時停止所有 Worker 與等待佇列。
+- 延續 V3.7.1 的 180px 縮圖快取與 149+ 張照片清單穩定性修正。
+- `.photojob` Schema 仍為 2，舊專案可直接開啟。
 
 ## 主要功能
 
@@ -21,14 +32,10 @@
 
 Repository：`chopper-coder/ImageRecordAssistant`
 
-請在 GitHub：
-
 1. `Settings → Pages`
 2. `Build and deployment → Source`
 3. 選擇 `GitHub Actions`
 
-正式 workflow 位於：`.github/workflows/pages.yml`。
+正式 workflow 位於 `.github/workflows/pages.yml`。
 
-如果瀏覽器無法拖入 `.github` 資料夾，請開啟既有的 `.github/workflows/pages.yml`，將本包根目錄的 `PAGES_WORKFLOW_COPY_THIS.yml` 全部內容複製進去並 Commit。
-
-詳細步驟請見 `UPLOAD_CLEAN_GUIDE.md`。
+若瀏覽器無法拖入 `.github` 資料夾，可打開既有 `.github/workflows/pages.yml`，將本包根目錄 `PAGES_WORKFLOW_COPY_THIS.yml` 的內容整份覆蓋並 Commit。

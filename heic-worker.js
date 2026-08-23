@@ -18,15 +18,15 @@ async function getDecoder() {
 }
 
 self.onmessage = async (event) => {
+  const { taskId = '', blob, type = 'image/jpeg', quality = 0.92 } = event.data || {};
   try {
-    const { blob, type = 'image/jpeg', quality = 0.94 } = event.data || {};
     if (!(blob instanceof Blob)) throw new Error('Invalid HEIC input');
     const heicTo = await getDecoder();
     let output = await heicTo({ blob, type, quality });
     if (Array.isArray(output)) output = output.find((item) => item instanceof Blob) || null;
     if (!(output instanceof Blob)) throw new Error('HEIC decoder returned no image');
-    self.postMessage({ ok: true, blob: output });
+    self.postMessage({ taskId, ok: true, blob: output });
   } catch (error) {
-    self.postMessage({ ok: false, error: String(error?.message || error || 'HEIC decode failed') });
+    self.postMessage({ taskId, ok: false, error: String(error?.message || error || 'HEIC decode failed') });
   }
 };

@@ -7,21 +7,23 @@
   }
 
   const APP_NAME = '圖片紀錄整理助手';
-  const APP_VERSION = 'V3.7';
+  const APP_VERSION = 'V3.7.2';
   const PHOTOJOB_SCHEMA_VERSION = 2;
   const HISTORY_LIMIT = 30;
   const SUPPORTED_RE = /\.(jpe?g|png|webp|bmp|heic|heif)$/i;
   const HEIC_RE = /\.(heic|heif)$/i;
   const HEIC_DECODER_VERSION = '1.5.2-restricted';
   const HEIC_WORKER_PATH = './heic-worker.js';
-  const HEIC_DECODER_TIMEOUT_MS = 45000;
-  const HEIC_JPEG_QUALITY = 0.94;
+  const HEIC_DECODER_TIMEOUT_MS = 60000;
+  const HEIC_JPEG_QUALITY = 0.92;
+  const HEIC_NATIVE_PROBE_TIMEOUT_MS = 8000;
+  const HEIC_POOL_IDLE_RELEASE_MS = 30000;
   const HEIC_PREFLIGHT_SCAN_BYTES = 2 * 1024 * 1024;
   const MAX_IMAGE_WIDTH = 16000;
   const MAX_IMAGE_HEIGHT = 16000;
   const DEFAULT_MAX_IMAGE_PIXELS = 60_000_000;
   const IMAGE_PREFLIGHT_SCAN_BYTES = 2 * 1024 * 1024;
-  const MAX_PROJECT_ARCHIVE_BYTES = 350 * 1024 * 1024;
+  const MAX_PROJECT_ARCHIVE_BYTES = 1150 * 1024 * 1024;
   const AUTOSAVE_JOURNAL_KEY = 'ImageRecordAssistantV350.recoveryJournals';
   const LEGACY_V340_AUTOSAVE_JOURNAL_KEY = 'ImageRecordAssistantV340.recoveryJournals';
   const LEGACY_AUTOSAVE_JOURNAL_KEY = 'ImageRecordAssistantV333.recoveryJournal';
@@ -35,7 +37,7 @@
   const AUTOSAVE_PREF_KEY = 'ImageRecordAssistantV31.autosaveEnabled';
   const MAX_PHOTOS_HARD = 800;
   const MAX_SINGLE_IMAGE_BYTES = 40 * 1024 * 1024;
-  const DEFAULT_MAX_TOTAL_IMAGE_BYTES = 250 * 1024 * 1024;
+  const DEFAULT_MAX_TOTAL_IMAGE_BYTES = 768 * 1024 * 1024;
   const MAX_SAFE_FILENAME_CODEPOINTS = 140;
   const MAX_QUICK_NOTES = 100;
   const MAX_QUICK_NOTE_CHARS = 500;
@@ -45,6 +47,8 @@
   const MAX_PROJECT_FIELD_CHARS = 300;
   const MAX_ANNOTATIONS_PER_PHOTO = 100;
   const MAX_ANNOTATION_TEXT_CHARS = 200;
+  const THUMB_MAX_EDGE = 180;
+  const THUMB_JPEG_QUALITY = 0.78;
 
   const $ = (id) => document.getElementById(id);
   const state = {
@@ -76,6 +80,11 @@
     importCancelRequested: false,
     activeHeicWorker: null,
     activeHeicCancel: null,
+    heicPool: null,
+    heicPoolGeneration: 0,
+    heicPoolIdleTimer: null,
+    nativeHeicSupport: null,
+    nativeHeicProbePromise: null,
     autosaveInFlight: null,
     activeImageWorker: null,
     activeImageCancel: null,
@@ -189,30 +198,82 @@
     }, 5000);
   }
 
-  function ensureItemThumbUrl(item) {
+  async function ensureItemThumbBlob(item) {
+    if (!item) return null;
+    if (item.thumbBlob instanceof Blob) return item.thumbBlob;
+    if (item.thumbPromise) return item.thumbPromise;
+    item.thumbPromise = (async () => {
+      const image = await loadBlobImage(item.blob);
+      const sourceW = Math.max(1, Number(image.naturalWidth || image.width || 1));
+      const sourceH = Math.max(1, Number(image.naturalHeight || image.height || 1));
+      const scale = Math.min(1, THUMB_MAX_EDGE / Math.max(sourceW, sourceH));
+      const width = Math.max(1, Math.round(sourceW * scale));
+      const height = Math.max(1, Math.round(sourceH * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      if (!ctx) throw new Error('無法建立縮圖畫布');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(image, 0, 0, width, height);
+      const blob = await canvasToBlob(canvas, 'image/jpeg', THUMB_JPEG_QUALITY);
+      canvas.width = 1;
+      canvas.height = 1;
+      item.thumbBlob = blob;
+      return blob;
+    })().finally(() => { item.thumbPromise = null; });
+    return item.thumbPromise;
+  }
+
+  async function ensureItemThumbUrl(item) {
     if (!item) return '';
-    if (!item.thumbUrl || !item.thumbUrl.startsWith('blob:')) item.thumbUrl = URL.createObjectURL(item.blob);
+    if (item.thumbUrl?.startsWith('blob:')) return item.thumbUrl;
+    const thumbBlob = await ensureItemThumbBlob(item);
+    if (!(thumbBlob instanceof Blob)) return '';
+    // 多個舊/新 DOM 同時等待縮圖時，再檢查一次，避免建立重複 Blob URL。
+    if (item.thumbUrl?.startsWith('blob:')) return item.thumbUrl;
+    item.thumbUrl = URL.createObjectURL(thumbBlob);
     return item.thumbUrl;
   }
 
-  function releaseItemThumbUrl(item) {
+  function releaseItemThumbUrl(item, dropCache = false) {
     if (!item) return;
     if (item.thumbUrl?.startsWith('blob:')) {
       try { URL.revokeObjectURL(item.thumbUrl); } catch (_) {}
       item.thumbUrl = '';
     }
+    if (dropCache) {
+      item.thumbBlob = null;
+      item.thumbPromise = null;
+    }
   }
 
-  function resetThumbnailObserver() {
+  function resetThumbnailObserver({ releaseUrls = false, dropCache = false } = {}) {
     try { state.thumbObserver?.disconnect(); } catch (_) {}
     state.thumbObserver = null;
-    state.items.forEach(releaseItemThumbUrl);
+    if (releaseUrls || dropCache) state.items.forEach((item) => releaseItemThumbUrl(item, dropCache));
+  }
+
+  async function loadThumbnailTarget(target, photo) {
+    if (!target || !photo || target.dataset.thumbLoading === '1') return;
+    target.dataset.thumbLoading = '1';
+    try {
+      const url = await ensureItemThumbUrl(photo);
+      if (!target.isConnected || target.dataset.photoId !== photo.id) return;
+      if (url && target.src !== url) target.src = url;
+    } catch (error) {
+      console.warn('Thumbnail generation failed', photo.originalName || photo.displayName || photo.id, error);
+    } finally {
+      if (target?.dataset) delete target.dataset.thumbLoading;
+    }
   }
 
   function observeLazyThumbnail(img, item) {
     if (!img || !item) return;
+    img.dataset.photoId = item.id;
     if (typeof IntersectionObserver !== 'function') {
-      img.src = ensureItemThumbUrl(item);
+      loadThumbnailTarget(img, item);
       return;
     }
     if (!state.thumbObserver) {
@@ -223,15 +284,15 @@
           const photo = state.items.find((candidate) => candidate.id === id);
           if (!photo) continue;
           if (entry.isIntersecting) {
-            if (!target.src) target.src = ensureItemThumbUrl(photo);
+            if (!target.src) loadThumbnailTarget(target, photo);
           } else if (target.src) {
+            // 只釋放可視 DOM 的 URL；真正的小縮圖 Blob 保留在記憶體快取，避免再次解碼原始大圖。
             target.removeAttribute('src');
-            releaseItemThumbUrl(photo);
+            releaseItemThumbUrl(photo, false);
           }
         }
-      }, { root: $('photoList'), rootMargin: '240px 0px', threshold: 0.01 });
+      }, { root: $('photoList'), rootMargin: '360px 0px', threshold: 0.01 });
     }
-    img.dataset.photoId = item.id;
     state.thumbObserver.observe(img);
   }
 
@@ -270,9 +331,12 @@
 
   function memoryModeForDevice() {
     const gb = deviceMemoryGb();
-    if (gb <= 2) return { id: 'low', label: '低記憶體模式', maxPixels: 24_000_000, maxTotalBytes: 120 * 1024 * 1024, maxPhotos: 250 };
-    if (gb <= 4) return { id: 'standard', label: '標準模式', maxPixels: 40_000_000, maxTotalBytes: 200 * 1024 * 1024, maxPhotos: 500 };
-    return { id: 'performance', label: '高效能模式', maxPixels: DEFAULT_MAX_IMAGE_PIXELS, maxTotalBytes: 300 * 1024 * 1024, maxPhotos: MAX_PHOTOS_HARD };
+    // 專案容量指的是「壓縮後圖片 Blob」總量，不等於所有圖片同時解碼進 RAM。
+    // V3.7 的 120/200/300 MB 上限會讓一般手機照片約 60–80 張就停止匯入。
+    // V3.7.2 延續小縮圖快取，並依裝置記憶體限制 HEIC 平行 Worker 數，避免用速度換取失控 RAM。
+    if (gb <= 2) return { id: 'low', label: '低記憶體模式', maxPixels: 24_000_000, maxTotalBytes: 512 * 1024 * 1024, maxPhotos: 250 };
+    if (gb <= 4) return { id: 'standard', label: '標準模式', maxPixels: 40_000_000, maxTotalBytes: 768 * 1024 * 1024, maxPhotos: 500 };
+    return { id: 'performance', label: '高效能模式', maxPixels: DEFAULT_MAX_IMAGE_PIXELS, maxTotalBytes: 1024 * 1024 * 1024, maxPhotos: MAX_PHOTOS_HARD };
   }
 
   function maxImagePixelsForDevice() { return memoryModeForDevice().maxPixels; }
@@ -285,7 +349,7 @@
     const el = $('memoryModeBadge');
     if (!el) return;
     const mode = memoryModeForDevice();
-    el.textContent = `${mode.label}｜照片 ${mode.maxPhotos} 張｜單圖約 ${Math.round(mode.maxPixels / 1_000_000)} MP｜專案 ${formatMiB(mode.maxTotalBytes)}`;
+    el.textContent = `${mode.label}｜照片 ${mode.maxPhotos} 張｜單圖約 ${Math.round(mode.maxPixels / 1_000_000)} MP｜專案 ${formatMiB(mode.maxTotalBytes)}｜HEIC ${heicPoolSizeForDevice()} 路解碼`;
   }
 
   function formatMiB(bytes) {
@@ -1132,7 +1196,7 @@
       badge.hidden = !state.dirty;
       badge.textContent = state.dirty ? '● 尚未另存' : '';
     }
-    document.title = `${state.dirty ? '● ' : ''}${APP_NAME} ${APP_VERSION}｜Case Management & Advanced Annotation Edition`;
+    document.title = `${state.dirty ? '● ' : ''}${APP_NAME} ${APP_VERSION}｜HEIC Fast Import & Parallel Decode Edition`;
   }
 
   function refreshDirtyState() {
@@ -1496,48 +1560,182 @@
     if (estimatedWorkingBytes > workingLimit) throw new Error(`${label} 解碼後預估需要 ${formatMiB(estimatedWorkingBytes)} 工作記憶體，超過此裝置安全上限。`);
   }
 
-  function terminateActiveHeicWorker(reason = 'HEIC/HEIF 解碼已取消。') {
-    const cancel = state.activeHeicCancel;
-    if (typeof cancel === 'function') {
-      cancel(new Error(reason));
-      return;
-    }
-    if (!state.activeHeicWorker) return;
-    try { state.activeHeicWorker.terminate(); } catch (_) {}
-    state.activeHeicWorker = null;
+  function heicPoolSizeForDevice() {
+    const mem = deviceMemoryGb();
+    const cores = Math.max(1, Number(navigator.hardwareConcurrency || 4));
+    const mobile = /Android|iPhone|iPad|Mobile/i.test(String(navigator.userAgent || ''));
+    if (mobile) return 1;
+    // Chromium 的 navigator.deviceMemory 通常最高回報 8，因此高效能桌機以 8 GB + 8 threads 啟用 3 路。
+    if (mem >= 8 && cores >= 8) return 3;
+    if (mem >= 4 && cores >= 4) return 2;
+    return 1;
   }
 
-  async function decodeHeicWithWorker(file, label) {
+  function createHeicPoolSlot(pool, slotIndex) {
+    const worker = new Worker(HEIC_WORKER_PATH, { type: 'module', name: `IRA-HEIC-Decoder-${slotIndex + 1}` });
+    const slot = { worker, busy: false, current: null, timer: null, index: slotIndex };
+    worker.onmessage = (event) => {
+      const data = event.data || {};
+      const task = slot.current;
+      if (!task || data.taskId !== task.id) return;
+      if (slot.timer) clearTimeout(slot.timer);
+      slot.timer = null;
+      slot.current = null;
+      slot.busy = false;
+      if (data.ok && data.blob instanceof Blob) task.resolve(data.blob);
+      else task.reject(new Error(data.error || `${task.label} HEIC/HEIF 解碼失敗。`));
+      dispatchHeicPool(pool);
+    };
+    worker.onerror = () => {
+      const task = slot.current;
+      if (slot.timer) clearTimeout(slot.timer);
+      slot.timer = null;
+      slot.current = null;
+      slot.busy = false;
+      if (task) task.reject(new Error(`${task.label} HEIC/HEIF Worker 執行失敗。`));
+      try { worker.terminate(); } catch (_) {}
+      if (state.heicPool === pool && pool.generation === state.heicPoolGeneration) {
+        const replacement = createHeicPoolSlot(pool, slotIndex);
+        pool.slots[slotIndex] = replacement;
+        dispatchHeicPool(pool);
+      }
+    };
+    return slot;
+  }
+
+  function ensureHeicPool() {
+    if (typeof Worker !== 'function') throw new Error('此瀏覽器不支援安全隔離的 HEIC Worker。');
+    const wanted = heicPoolSizeForDevice();
+    if (state.heicPool && state.heicPool.size === wanted) return state.heicPool;
+    terminateActiveHeicWorker('重新建立 HEIC 平行解碼器。');
+    const pool = { size: wanted, slots: [], queue: [], taskSeq: 0, generation: state.heicPoolGeneration };
+    for (let i = 0; i < wanted; i += 1) pool.slots.push(createHeicPoolSlot(pool, i));
+    state.heicPool = pool;
+    return pool;
+  }
+
+  function replaceTimedOutHeicSlot(pool, slot, task) {
+    if (slot.timer) clearTimeout(slot.timer);
+    slot.timer = null;
+    slot.current = null;
+    slot.busy = false;
+    try { slot.worker.terminate(); } catch (_) {}
+    task.reject(new Error(`${task.label} HEIC/HEIF 轉換逾時，已重啟該解碼器。`));
+    if (state.heicPool === pool && pool.generation === state.heicPoolGeneration) {
+      pool.slots[slot.index] = createHeicPoolSlot(pool, slot.index);
+      dispatchHeicPool(pool);
+    }
+  }
+
+  function scheduleHeicPoolIdleRelease(pool) {
+    if (!pool || state.heicPool !== pool) return;
+    clearTimeout(state.heicPoolIdleTimer);
+    if (pool.queue.length || pool.slots.some((slot) => slot.busy)) return;
+    state.heicPoolIdleTimer = setTimeout(() => {
+      if (state.heicPool === pool && !pool.queue.length && pool.slots.every((slot) => !slot.busy)) {
+        terminateActiveHeicWorker('HEIC 解碼器閒置，已釋放記憶體。');
+      }
+    }, HEIC_POOL_IDLE_RELEASE_MS);
+  }
+
+  function dispatchHeicPool(pool = state.heicPool) {
+    if (!pool || state.heicPool !== pool || pool.generation !== state.heicPoolGeneration) return;
+    for (const slot of pool.slots) {
+      if (slot.busy) continue;
+      const task = pool.queue.shift();
+      if (!task) break;
+      slot.busy = true;
+      slot.current = task;
+      slot.timer = setTimeout(() => replaceTimedOutHeicSlot(pool, slot, task), HEIC_DECODER_TIMEOUT_MS);
+      try {
+        slot.worker.postMessage({ taskId: task.id, blob: task.file, type: 'image/jpeg', quality: HEIC_JPEG_QUALITY });
+      } catch (error) {
+        if (slot.timer) clearTimeout(slot.timer);
+        slot.timer = null;
+        slot.current = null;
+        slot.busy = false;
+        task.reject(error instanceof Error ? error : new Error(String(error || 'HEIC/HEIF Worker 傳送失敗。')));
+        queueMicrotask(() => dispatchHeicPool(pool));
+      }
+    }
+    scheduleHeicPoolIdleRelease(pool);
+  }
+
+  function terminateActiveHeicWorker(reason = 'HEIC/HEIF 解碼已取消。') {
+    const error = new Error(reason);
+    clearTimeout(state.heicPoolIdleTimer);
+    state.heicPoolIdleTimer = null;
+    state.heicPoolGeneration += 1;
+    const pool = state.heicPool;
+    state.heicPool = null;
+    if (pool) {
+      for (const task of pool.queue.splice(0)) {
+        try { task.reject(error); } catch (_) {}
+      }
+      for (const slot of pool.slots) {
+        if (slot.timer) clearTimeout(slot.timer);
+        slot.timer = null;
+        if (slot.current) {
+          try { slot.current.reject(error); } catch (_) {}
+          slot.current = null;
+        }
+        try { slot.worker.terminate(); } catch (_) {}
+      }
+    }
+    const cancel = state.activeHeicCancel;
+    state.activeHeicCancel = null;
+    if (typeof cancel === 'function') {
+      try { cancel(error); } catch (_) {}
+    }
+    if (state.activeHeicWorker) {
+      try { state.activeHeicWorker.terminate(); } catch (_) {}
+      state.activeHeicWorker = null;
+    }
+  }
+
+  async function decodeHeicWithWorker(file, label, { priority = false } = {}) {
     if (globalThis.__IRA_HEIC_DECODER__?.heicTo) {
       return withTimeout(globalThis.__IRA_HEIC_DECODER__.heicTo({ blob: file, type: 'image/jpeg', quality: HEIC_JPEG_QUALITY }), HEIC_DECODER_TIMEOUT_MS, `${label} HEIC/HEIF 轉換逾時`);
     }
-    if (typeof Worker !== 'function') throw new Error('此瀏覽器不支援安全隔離的 HEIC Worker。');
-    terminateActiveHeicWorker();
-    const worker = new Worker(HEIC_WORKER_PATH, { type: 'module', name: 'IRA-HEIC-Decoder' });
-    state.activeHeicWorker = worker;
+    const pool = ensureHeicPool();
+    clearTimeout(state.heicPoolIdleTimer);
+    state.heicPoolIdleTimer = null;
     return await new Promise((resolve, reject) => {
-      let settled = false;
-      let timer = null;
-      const finish = (fn, value) => {
-        if (settled) return;
-        settled = true;
-        if (timer) clearTimeout(timer);
-        if (state.activeHeicWorker === worker) state.activeHeicWorker = null;
-        if (state.activeHeicCancel === cancelCurrent) state.activeHeicCancel = null;
-        try { worker.terminate(); } catch (_) {}
-        fn(value);
-      };
-      const cancelCurrent = (error) => finish(reject, error instanceof Error ? error : new Error(String(error || 'HEIC/HEIF 解碼已取消。')));
-      state.activeHeicCancel = cancelCurrent;
-      timer = setTimeout(() => finish(reject, new Error(`${label} HEIC/HEIF 轉換逾時，已強制終止解碼器。`)), HEIC_DECODER_TIMEOUT_MS);
-      worker.onmessage = (event) => {
-        const data = event.data || {};
-        if (data.ok && data.blob instanceof Blob) finish(resolve, data.blob);
-        else finish(reject, new Error(data.error || `${label} HEIC/HEIF 解碼失敗。`));
-      };
-      worker.onerror = () => finish(reject, new Error(`${label} HEIC/HEIF Worker 執行失敗。`));
-      worker.postMessage({ blob: file, type: 'image/jpeg', quality: HEIC_JPEG_QUALITY });
+      const task = { id: `${pool.generation}-${++pool.taskSeq}`, file, label, resolve, reject };
+      if (priority) pool.queue.unshift(task);
+      else pool.queue.push(task);
+      dispatchHeicPool(pool);
     });
+  }
+
+  async function tryNativeHeicCached(file, label, heicMagic) {
+    if (state.nativeHeicSupport === false) return null;
+    if (state.nativeHeicSupport === true) {
+      try {
+        return await withTimeout(nativeHeicToJpeg(file, label, heicMagic), HEIC_NATIVE_PROBE_TIMEOUT_MS, `${label} 原生 HEIC 解碼逾時`);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    const isProbeOwner = !state.nativeHeicProbePromise;
+    if (isProbeOwner) {
+      state.nativeHeicProbePromise = withTimeout(
+        nativeHeicToJpeg(file, label, heicMagic),
+        HEIC_NATIVE_PROBE_TIMEOUT_MS,
+        `${label} 原生 HEIC 解碼逾時`,
+      ).then((blob) => ({ supported: true, blob })).catch(() => ({ supported: false }));
+    }
+    const result = await state.nativeHeicProbePromise;
+    state.nativeHeicSupport = Boolean(result?.supported);
+    if (isProbeOwner) state.nativeHeicProbePromise = null;
+    if (!result?.supported) return null;
+    if (isProbeOwner && result.blob instanceof Blob) return result.blob;
+    try {
+      return await withTimeout(nativeHeicToJpeg(file, label, heicMagic), HEIC_NATIVE_PROBE_TIMEOUT_MS, `${label} 原生 HEIC 解碼逾時`);
+    } catch (_) {
+      return null;
+    }
   }
 
   async function nativeHeicToJpeg(blob, label, heicMagic) {
@@ -1574,23 +1772,22 @@
     if (!heifSafety.dimensions) throw new Error(`${label} 無法在解碼前安全取得 HEIC/HEIF 像素尺寸，已停止處理。`);
     assertSafeImageDimensions(heifSafety.dimensions.width, heifSafety.dimensions.height, label);
 
-    let jpegBlob;
-    let decoder = 'native';
-    try {
-      jpegBlob = await withTimeout(nativeHeicToJpeg(file, label, heicMagic), 15000, `${label} 原生 HEIC 解碼逾時`);
-    } catch (nativeError) {
+    let jpegBlob = await tryNativeHeicCached(file, label, heicMagic);
+    let decoder = jpegBlob instanceof Blob ? 'native-cached' : `heic-to ${HEIC_DECODER_VERSION} / persistent-worker-pool`;
+    if (!(jpegBlob instanceof Blob)) {
       if (heicMagic.generic) throw new Error('此 HEIF 僅宣告通用 mif1 品牌，無法確認為安全的 HEVC 靜態影像；本版不交給 fallback decoder。');
-      decoder = `heic-to ${HEIC_DECODER_VERSION} / isolated-worker`;
       try {
         jpegBlob = await decodeHeicWithWorker(file, label);
       } catch (error) {
-        if (/Failed to fetch|module|404|載入|Worker/i.test(String(error?.message || ''))) throw new Error('此瀏覽器無法原生讀取 HEIC，且本機 HEIC 解碼元件不存在或無法載入。請使用完整 V3.7 離線建置版。');
+        if (/Failed to fetch|module|404|載入|Worker/i.test(String(error?.message || ''))) throw new Error('此瀏覽器無法原生讀取 HEIC，且本機 HEIC 解碼元件不存在或無法載入。請使用完整 V3.7.2 GitHub Pages 建置版。');
         throw new Error(`${label} HEIC/HEIF 轉換失敗：${error.message || '解碼器無法處理此檔案'}`);
       }
     }
     if (Array.isArray(jpegBlob)) jpegBlob = jpegBlob.find((item) => item instanceof Blob) || null;
     if (!(jpegBlob instanceof Blob)) throw new Error(`${label} HEIC/HEIF 轉換沒有產生有效圖片。`);
-    const validated = await validateDecodedProjectImage(jpegBlob, label);
+    // 解碼器已經完成一次完整 HEIC -> JPEG。這裡只做 JPEG header + 尺寸安全驗證，
+    // 不再把整張 JPEG 再解碼一次，避免大量 iPhone 照片產生第二次昂貴 decode。
+    const validated = await validateDecodedProjectImage(jpegBlob, label, { headerOnly: true });
     return { ...validated, converted: true, sourceFormat: heicMagic.format, decoder, sourceBytes: Number(file.size || 0), sourceDimensions: heifSafety.dimensions ? `${heifSafety.dimensions.width}x${heifSafety.dimensions.height}` : `${validated.width}x${validated.height}`, normalizedAt: new Date().toISOString(), privacy: { hasExif: false, hasGps: false } };
   }
 
@@ -1598,8 +1795,12 @@
     const header = new Uint8Array(await blob.slice(0, 128).arrayBuffer());
     const magic = detectSupportedImageMagic(header);
     if (!magic) throw new Error(`${label} 的檔案內容不是支援的 JPG / PNG / WEBP / BMP 圖片。`);
-    if (!options.preflightDone) await preflightStandardImageDimensions(blob, magic, label);
+    const dimensions = options.preflightDone ? null : await preflightStandardImageDimensions(blob, magic, label);
     const normalized = blob.type === magic.mime ? blob : new Blob([blob], { type: magic.mime });
+    if (options.headerOnly) {
+      const safeDimensions = dimensions || await preflightStandardImageDimensions(normalized, magic, label);
+      return { blob: normalized, magic, width: safeDimensions.width, height: safeDimensions.height };
+    }
     const img = await loadBlobImage(normalized);
     if (!img.naturalWidth || !img.naturalHeight) throw new Error(`${label} 無法解碼。`);
     assertSafeImageDimensions(img.naturalWidth, img.naturalHeight, label);
@@ -1619,8 +1820,8 @@
     const next = Math.max(0, Math.min(state.items.length - 1, (state.selected < 0 ? 0 : state.selected) + delta));
     if (next === state.selected) return;
     selectItem(next);
-    const rows = $('photoList').querySelectorAll('.photo-row');
-    rows[next]?.scrollIntoView({ block: 'nearest' });
+    const row = $('photoList').querySelector(`.photo-row[data-photo-index="${next}"]`);
+    row?.scrollIntoView({ block: 'nearest' });
   }
 
   function textWeight(value) {
@@ -2075,6 +2276,26 @@
     applyArchiveMode();
   }
 
+  function photoListSubText(item) {
+    const subParts = [];
+    if (item?.capturedAt) subParts.push(formatCapturedAt(item.capturedAt));
+    if (item?.sourceFolder) subParts.push(`📁 ${item.sourceFolder}`);
+    if (item?.section) subParts.push(`§ ${item.section}`);
+    if (item?.compareGroup && item?.compareRole) subParts.push(`${item.compareRole === 'before' ? '前' : '後'}:${item.compareGroup}`);
+    if (item?.privacy?.hasGps) subParts.push('GPS');
+    return subParts.join('｜') || (item?.sourceFormat ? String(item.sourceFormat).toUpperCase() : '圖片');
+  }
+
+  function refreshPhotoListRow(itemId) {
+    const row = $('photoList')?.querySelector(`.photo-row[data-photo-id="${CSS.escape(String(itemId || ''))}"]`);
+    const item = state.items.find((candidate) => candidate.id === itemId);
+    if (!row || !item) return;
+    const name = row.querySelector('.fname');
+    if (name) { name.textContent = item.displayName; name.title = `原始檔名：${item.originalName}`; }
+    const sub = row.querySelector('.photo-sub');
+    if (sub) sub.textContent = photoListSubText(item);
+  }
+
   function renderList() {
     const list = $('photoList');
     resetThumbnailObserver();
@@ -2098,6 +2319,8 @@
       const row = document.createElement('div');
       const multiSelected = state.selectedIds.has(item.id);
       row.className = `photo-row${index === state.selected ? ' active' : ''}${multiSelected ? ' multi-selected' : ''}`;
+      row.dataset.photoId = item.id;
+      row.dataset.photoIndex = String(index);
       row.draggable = true;
       const check = document.createElement('input');
       check.type = 'checkbox';
@@ -2107,7 +2330,7 @@
       check.addEventListener('click', (event) => event.stopPropagation());
       check.addEventListener('change', () => {
         if (check.checked) state.selectedIds.add(item.id); else state.selectedIds.delete(item.id);
-        renderList();
+        refreshListSelectionState();
       });
       const thumb = document.createElement('img');
       thumb.className = 'photo-thumb';
@@ -2126,13 +2349,7 @@
       name.title = `原始檔名：${item.originalName}`;
       const sub = document.createElement('span');
       sub.className = 'photo-sub';
-      const subParts = [];
-      if (item.capturedAt) subParts.push(formatCapturedAt(item.capturedAt));
-      if (item.sourceFolder) subParts.push(`📁 ${item.sourceFolder}`);
-      if (item.section) subParts.push(`§ ${item.section}`);
-      if (item.compareGroup && item.compareRole) subParts.push(`${item.compareRole === 'before' ? '前' : '後'}:${item.compareGroup}`);
-      if (item.privacy?.hasGps) subParts.push('GPS');
-      sub.textContent = subParts.join('｜') || (item.sourceFormat ? String(item.sourceFormat).toUpperCase() : '圖片');
+      sub.textContent = photoListSubText(item);
       nameWrap.append(name, sub);
       row.append(check, thumb, num, nameWrap);
       row.addEventListener('click', (event) => {
@@ -2184,9 +2401,31 @@
     return `inset(${c.top}% ${c.right}% ${c.bottom}% ${c.left}%)`;
   }
 
+  function refreshListSelectionState() {
+    const list = $('photoList');
+    if (!list) return;
+    list.querySelectorAll('.photo-row').forEach((row) => {
+      const index = Number(row.dataset.photoIndex);
+      const id = row.dataset.photoId || '';
+      row.classList.toggle('active', Number.isInteger(index) && index === state.selected);
+      row.classList.toggle('multi-selected', state.selectedIds.has(id));
+      const check = row.querySelector('.multi-check');
+      if (check) check.checked = state.selectedIds.has(id);
+    });
+    if ($('selectedCount')) $('selectedCount').textContent = `已勾選 ${state.selectedIds.size} 張`;
+    updateButtons();
+    updateSmartSections();
+  }
+
   function selectItem(index) {
+    if (!Number.isInteger(index) || index < 0 || index >= state.items.length) return;
+    if (state.selected === index) {
+      showSelected();
+      return;
+    }
     state.selected = index;
-    renderList();
+    // 選取照片只更新 active 樣式，不重建整個清單，避免 100+ 張縮圖重新載入。
+    refreshListSelectionState();
     showSelected();
   }
 
@@ -2345,69 +2584,121 @@
       setStatus('沒有可加入的檔案；可使用 JPG / PNG / WEBP / BMP / HEIC / HEIF。', 'err');
       return;
     }
+
     const currentBytes = state.items.reduce((sum, item) => sum + Number(item.blob?.size || 0), 0);
     const accepted = [];
     const skipped = [];
     let convertedHeic = 0;
     let totalBytes = currentBytes;
     let stopped = false;
+    const availableSlots = Math.max(0, maxPhotosForDevice() - state.items.length);
+    if (!availableSlots) {
+      setStatus(`已達目前記憶體模式照片數量上限 ${maxPhotosForDevice()} 張。`, 'err');
+      return;
+    }
+    const queue = candidates.slice(0, availableSlots);
+    if (queue.length < candidates.length) skipped.push(`另有 ${candidates.length - queue.length} 項超過照片數量上限未處理`);
+
+    const heicCount = queue.filter((descriptor) => HEIC_RE.test(descriptor.file?.name || '')).length;
+    const parallelism = heicCount ? heicPoolSizeForDevice() : 1;
+    const results = new Array(queue.length);
+    let nextIndex = 0;
+    let completed = 0;
+
     state.importRunning = true;
     state.importCancelRequested = false;
-    showLoading('正在匯入照片…', `準備處理 ${candidates.length} 個檔案。`, { cancelable: candidates.length > 1, progress: true });
-    try {
-      for (let index = 0; index < candidates.length; index += 1) {
-        if (state.importCancelRequested) { stopped = true; break; }
-        if (state.items.length + accepted.length >= maxPhotosForDevice()) {
-          skipped.push(`已達目前記憶體模式照片數量上限 ${maxPhotosForDevice()} 張`);
-          break;
-        }
-        const descriptor = candidates[index];
+    showLoading(
+      '正在快速匯入照片…',
+      heicCount
+        ? `偵測到 ${heicCount} 張 HEIC/HEIF；使用 ${parallelism} 路持久 Worker 平行解碼。`
+        : `準備處理 ${queue.length} 個檔案。`,
+      { cancelable: queue.length > 1, progress: true },
+    );
+
+    const normalizeWorker = async () => {
+      while (true) {
+        if (state.importCancelRequested) { stopped = true; return; }
+        const index = nextIndex++;
+        if (index >= queue.length) return;
+        const descriptor = queue[index];
         const file = descriptor.file;
-        updateLoadingProgress(index, candidates.length);
-        $('loadingText').textContent = `正在驗證 ${index + 1} / ${candidates.length}：${file.name || '未命名檔案'}`;
-        if (!file.size) { skipped.push(`${file.name || '未命名檔案'}：空白檔案`); continue; }
-        if (file.size > MAX_SINGLE_IMAGE_BYTES) { skipped.push(`${file.name || '未命名檔案'}：單張照片不可超過 40 MB`); continue; }
         try {
+          if (!file.size) throw new Error('空白檔案');
+          if (file.size > MAX_SINGLE_IMAGE_BYTES) throw new Error('單張照片不可超過 40 MB');
+          const isHeic = HEIC_RE.test(file.name || '');
+          $('loadingText').textContent = isHeic
+            ? `HEIC 平行解碼 ${completed + 1} / ${queue.length}：${file.name || '未命名檔案'}（${parallelism} 路）`
+            : `正在驗證 ${completed + 1} / ${queue.length}：${file.name || '未命名檔案'}`;
           const normalized = await normalizeImportedImage(file, file.name || `檔案 ${index + 1}`);
-          if (normalized.blob.size > MAX_SINGLE_IMAGE_BYTES) throw new Error('轉換後照片超過 40 MB 上限');
-          if (totalBytes + normalized.blob.size > maxTotalImageBytesForDevice()) {
-            skipped.push(`${file.name || '未命名檔案'}：加入後會超過此裝置約 ${formatMiB(maxTotalImageBytesForDevice())} 的安全專案容量上限`);
-            break;
-          }
-          const privacy = normalized.privacy || { hasExif: false, hasGps: false };
-          const fileTime = Number(file.lastModified || 0) > 0 ? new Date(file.lastModified).toISOString() : '';
-          accepted.push({
-            blob: normalized.blob,
-            originalName: file.name || `photo_${index + 1}.jpg`,
-            displayName: file.name || `photo_${index + 1}.jpg`,
-            converted: normalized.converted,
-            decoder: normalized.decoder,
-            sourceFormat: normalized.sourceFormat,
-            sourceBytes: normalized.sourceBytes,
-            sourceDimensions: normalized.sourceDimensions,
-            normalizedAt: normalized.normalizedAt,
-            privacy: { hasExif: Boolean(privacy.hasExif), hasGps: Boolean(privacy.hasGps) },
-            capturedAt: privacy.capturedAt || fileTime,
-            captureSource: privacy.capturedAt ? 'exif' : (fileTime ? 'file' : ''),
-            sourceFolder: descriptor.sourceFolder || '',
-            suggestedLocation: descriptor.suggestedLocation || '',
-          });
-          if (normalized.converted) convertedHeic += 1;
-          totalBytes += normalized.blob.size;
+          results[index] = { ok: true, descriptor, normalized };
         } catch (error) {
-          skipped.push(`${file.name || '未命名檔案'}：${error.message || '圖片無法解碼'}`);
+          const message = String(error?.message || '圖片無法解碼');
+          if (state.importCancelRequested || /取消|重新建立 HEIC 平行解碼器/.test(message)) {
+            stopped = true;
+            results[index] = { ok: false, canceled: true, descriptor, error: message };
+          } else {
+            results[index] = { ok: false, descriptor, error: message };
+          }
+        } finally {
+          completed += 1;
+          updateLoadingProgress(completed, queue.length);
         }
-        updateLoadingProgress(index + 1, candidates.length);
       }
+    };
+
+    try {
+      const workers = Array.from({ length: Math.max(1, Math.min(parallelism, queue.length)) }, () => normalizeWorker());
+      await Promise.all(workers);
     } finally {
       state.importRunning = false;
       hideLoading();
     }
+
+    for (let index = 0; index < results.length; index += 1) {
+      const result = results[index];
+      if (!result) continue;
+      const file = result.descriptor.file;
+      if (!result.ok) {
+        if (!result.canceled) skipped.push(`${file.name || '未命名檔案'}：${result.error}`);
+        continue;
+      }
+      const normalized = result.normalized;
+      if (normalized.blob.size > MAX_SINGLE_IMAGE_BYTES) {
+        skipped.push(`${file.name || '未命名檔案'}：轉換後照片超過 40 MB 上限`);
+        continue;
+      }
+      if (totalBytes + normalized.blob.size > maxTotalImageBytesForDevice()) {
+        skipped.push(`${file.name || '未命名檔案'}：加入後會超過此裝置約 ${formatMiB(maxTotalImageBytesForDevice())} 的安全專案容量上限`);
+        break;
+      }
+      const privacy = normalized.privacy || { hasExif: false, hasGps: false };
+      const fileTime = Number(file.lastModified || 0) > 0 ? new Date(file.lastModified).toISOString() : '';
+      accepted.push({
+        blob: normalized.blob,
+        originalName: file.name || `photo_${index + 1}.jpg`,
+        displayName: file.name || `photo_${index + 1}.jpg`,
+        converted: normalized.converted,
+        decoder: normalized.decoder,
+        sourceFormat: normalized.sourceFormat,
+        sourceBytes: normalized.sourceBytes,
+        sourceDimensions: normalized.sourceDimensions,
+        normalizedAt: normalized.normalizedAt,
+        privacy: { hasExif: Boolean(privacy.hasExif), hasGps: Boolean(privacy.hasGps) },
+        capturedAt: privacy.capturedAt || fileTime,
+        captureSource: privacy.capturedAt ? 'exif' : (fileTime ? 'file' : ''),
+        sourceFolder: result.descriptor.sourceFolder || '',
+        suggestedLocation: result.descriptor.suggestedLocation || '',
+      });
+      if (normalized.converted) convertedHeic += 1;
+      totalBytes += normalized.blob.size;
+    }
+
     if (!accepted.length) {
       const stopText = stopped ? '匯入已停止。' : '沒有照片成功加入。';
       setStatus(skipped.length ? `${stopText}${skipped.slice(0, 2).join('；')}` : stopText, stopped ? '' : 'err');
       return;
     }
+
     const autoFolderLocation = Boolean($('folderToLocation')?.checked);
     for (const item of accepted) {
       state.items.push({
@@ -2422,7 +2713,9 @@
     state.lastHealthResult = null;
     if ($('sortMode')) $('sortMode').value = 'manual';
     renderList(); showSelected();
-    const heicText = convertedHeic ? `；HEIC/HEIF 已轉為內部 JPEG ${convertedHeic} 張` : '';
+    const heicText = convertedHeic
+      ? `；HEIC/HEIF 已以 ${parallelism} 路平行解碼 ${convertedHeic} 張${state.nativeHeicSupport === false ? '（已略過後續無效的原生解碼嘗試）' : ''}`
+      : '';
     const folderText = accepted.some((item) => item.sourceFolder) ? '；已保留資料夾來源資訊' : '';
     const skippedText = skipped.length ? `；另略過 ${skipped.length} 項（${skipped.slice(0, 2).join('；')}${skipped.length > 2 ? '…' : ''}）` : '';
     const stoppedText = stopped ? '；使用者已停止後續匯入' : '';
@@ -2432,7 +2725,7 @@
   }
 
   function revokeStateUrls() {
-    resetThumbnailObserver();
+    resetThumbnailObserver({ releaseUrls: true, dropCache: true });
     state.items.forEach((item) => {
       if (item.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(item.previewUrl);
       item.previewUrl = '';
@@ -2444,7 +2737,7 @@
     if (state.selected < 0) return;
     const item = state.items[state.selected];
     item.displayName = buildDisplayName($('photoName').value, item.originalName);
-    renderList();
+    refreshPhotoListRow(item.id);
     showSelected();
     setStatus('已更新照片檔名。', 'ok');
     scheduleAutosave();
@@ -2504,7 +2797,7 @@
       item.rotation = ((Number(item.rotation || 0) + delta) % 360 + 360) % 360;
       item.annotations = rotateAnnotations(item.annotations, delta);
     });
-    showSelected(); renderList();
+    showSelected(); refreshListSelectionState();
     setStatus(`已旋轉 ${items.length} 張照片。`, 'ok'); scheduleAutosave();
   }
 
@@ -4030,8 +4323,8 @@
     $('sortMode').addEventListener('change', () => sortPhotos($('sortMode').value));
     $('photoFilter').addEventListener('input', renderList);
 
-    $('selectAllBtn').addEventListener('click', () => { state.items.forEach((item) => state.selectedIds.add(item.id)); renderList(); });
-    $('clearSelectionBtn').addEventListener('click', () => { state.selectedIds.clear(); renderList(); });
+    $('selectAllBtn').addEventListener('click', () => { state.items.forEach((item) => state.selectedIds.add(item.id)); refreshListSelectionState(); });
+    $('clearSelectionBtn').addEventListener('click', () => { state.selectedIds.clear(); refreshListSelectionState(); });
     $('upBtn').addEventListener('click', () => moveSelected(-1));
     $('downBtn').addEventListener('click', () => moveSelected(1));
     $('prevPhotoBtn').addEventListener('click', () => navigatePhoto(-1));
@@ -4069,7 +4362,7 @@
     $('restoreNameBtn').addEventListener('click', () => {
       if (state.selected < 0) return;
       state.items[state.selected].displayName = state.items[state.selected].originalName;
-      renderList(); showSelected(); scheduleAutosave();
+      refreshPhotoListRow(state.items[state.selected].id); showSelected(); scheduleAutosave();
     });
     $('batchRenameBtn').addEventListener('click', batchRenameAll);
     $('photoName').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); applySelectedName(); } });
@@ -4129,7 +4422,9 @@
     ['photoSection','photoTags','compareGroup','compareRole'].forEach((id) => $(id)?.addEventListener(id === 'compareRole' ? 'change' : 'input', () => {
       const item = state.items[state.selected]; if (!item || state.caseArchived) return;
       item.section = $('photoSection').value.trim(); item.tags = $('photoTags').value.trim(); item.compareGroup = $('compareGroup').value.trim(); item.compareRole = $('compareRole').value;
-      state.lastHealthResult = null; renderList(); scheduleAutosave();
+      state.lastHealthResult = null;
+      if (String($('photoFilter')?.value || '').trim()) renderList(); else refreshPhotoListRow(item.id);
+      scheduleAutosave();
     }));
     ['caseNumber','watermarkText'].forEach((id) => $(id)?.addEventListener('input', scheduleAutosave));
     $('watermarkEnabled')?.addEventListener('change', scheduleAutosave);
@@ -4159,7 +4454,7 @@
       state.items[targetIndex].annotations = sanitizeAnnotations(state.annotationDraft);
       const count = state.items[targetIndex].annotations.length;
       state.selected = targetIndex;
-      closeAnnotationEditor(); showSelected(); renderList(); scheduleAutosave();
+      closeAnnotationEditor(); showSelected(); refreshListSelectionState(); scheduleAutosave();
       showActionToast(count ? `已套用 ${count} 個照片註記` : '已清除照片註記', true);
     });
 
@@ -4312,7 +4607,7 @@
       }
       if (cmd && event.key.toLowerCase() === 's') { event.preventDefault(); saveProject(); return; }
       if (cmd && event.key.toLowerCase() === 'o') { event.preventDefault(); $('projectInput').click(); return; }
-      if (!editing && cmd && event.key.toLowerCase() === 'a') { event.preventDefault(); state.items.forEach((item) => state.selectedIds.add(item.id)); renderList(); return; }
+      if (!editing && cmd && event.key.toLowerCase() === 'a') { event.preventDefault(); state.items.forEach((item) => state.selectedIds.add(item.id)); refreshListSelectionState(); return; }
       if (!editing && cmd && event.key.toLowerCase() === 'e') { event.preventDefault(); openPreflight(null); return; }
       if (!editing && cmd && !event.shiftKey && event.key.toLowerCase() === 'z') { event.preventDefault(); undoProjectChange(); return; }
       if (!editing && cmd && (event.key.toLowerCase() === 'y' || (event.shiftKey && event.key.toLowerCase() === 'z'))) { event.preventDefault(); redoProjectChange(); return; }

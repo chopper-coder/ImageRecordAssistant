@@ -1,4 +1,4 @@
-# V3.7 GitHub Clean Package 上傳方式
+# V3.7.2 GitHub Clean Package 上傳方式
 
 ## 先清除舊檔
 
@@ -39,12 +39,12 @@
 2. `.github → workflows → pages.yml`
 3. 按鉛筆 Edit
 4. 將 `PAGES_WORKFLOW_COPY_THIS.yml` 的內容全部貼上覆蓋
-5. Commit message：`更新 V3.7 Clean Pages workflow`
+5. Commit message：`更新 V3.7.2 HEIC Fast Import Pages workflow`
 6. Commit 到 `main`
 
 ## 部署成功判斷
 
-到 `Actions → Deploy GitHub Pages - V3.7 Clean`。
+到 `Actions → Deploy GitHub Pages - V3.7.2`。
 
 應看到：
 
@@ -55,4 +55,4 @@
 
 <https://chopper-coder.github.io/ImageRecordAssistant/>
 
-按 `Ctrl + F5`，右上角應顯示 `V3.7`。
+按 `Ctrl + F5`，右上角應顯示 `V3.7.2`。

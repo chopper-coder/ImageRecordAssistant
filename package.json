@@ -1,8 +1,8 @@
 {
-  "name": "image-record-assistant-v3-7",
+  "name": "image-record-assistant-v3-7-2",
   "private": true,
-  "version": "3.7.0",
-  "description": "圖片紀錄整理助手 V3.7｜Case Management & Advanced Annotation Edition",
+  "version": "3.7.2",
+  "description": "圖片紀錄整理助手 V3.7.2｜HEIC Fast Import & Parallel Decode Edition",
   "dependencies": {
     "heic-to": "1.5.2",
     "jszip": "3.10.1"
