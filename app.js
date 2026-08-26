@@ -7,7 +7,7 @@
   }
 
   const APP_NAME = '圖片紀錄整理助手';
-  const APP_VERSION = 'V3.8';
+  const APP_VERSION = 'V3.8.2';
   const PHOTOJOB_SCHEMA_VERSION = 2;
   const HISTORY_LIMIT = 30;
   const SUPPORTED_RE = /\.(jpe?g|png|webp|bmp|heic|heif)$/i;
@@ -455,9 +455,8 @@
     const host = $('projectDashboard');
     if (!host) return;
     const totalBytes = state.items.reduce((sum, item) => sum + Number(item.blob?.size || 0), 0);
-    const metaLocation = String($('location')?.value || '').trim();
     const missingDesc = state.items.filter((item) => !String(item.description || '').trim()).length;
-    const missingLocation = state.items.filter((item) => !String(item.location || '').trim() && !metaLocation).length;
+    const missingLocation = state.items.filter((item) => !String(item.location || '').trim()).length;
     const heic = state.items.filter((item) => /hei[cf]/i.test(String(item.sourceFormat || ''))).length;
     const gps = state.items.filter((item) => item.privacy?.hasGps).length;
     const score = healthScore(state.lastHealthResult);
@@ -1259,7 +1258,7 @@
       badge.hidden = !state.dirty;
       badge.textContent = state.dirty ? '● 尚未另存' : '';
     }
-    document.title = `${state.dirty ? '● ' : ''}${APP_NAME} ${APP_VERSION}｜Large Project Control & Export Workflow Edition`;
+    document.title = `${state.dirty ? '● ' : ''}${APP_NAME} ${APP_VERSION}｜Batch Rename Workflow Hotfix`;
   }
 
   function refreshDirtyState() {
@@ -1870,8 +1869,8 @@
     return { blob: normalized, magic, width: img.naturalWidth, height: img.naturalHeight };
   }
 
-  function effectiveLocation(item, meta = metaPayload()) {
-    return String(item?.location || '').trim() || meta.location || '';
+  function effectiveLocation(item) {
+    return String(item?.location || '').trim();
   }
 
   function getBatchSelectedItems() {
@@ -2070,7 +2069,7 @@
       const remain = (100 - c.left - c.right) * (100 - c.top - c.bottom) / 100;
       if (remain < 15) result.warnings.push(`照片 ${n} 裁切後只剩約 ${remain.toFixed(1)}% 面積。`);
       if (!String(item.description || '').trim()) result.warnings.push(`照片 ${n} 尚未填寫說明。`);
-      if (!String(item.location || '').trim() && !String(metaPayload().location || '').trim()) result.warnings.push(`照片 ${n} 沒有照片地點，文件地點也為空白。`);
+      if (!String(item.location || '').trim()) result.warnings.push(`照片 ${n} 尚未填寫照片地點。`);
     }
     updateLoadingProgress(state.items.length, state.items.length);
     const exactPairs = new Set(result.duplicates.map(([a, b]) => `${Math.min(a,b)}:${Math.max(a,b)}`));
@@ -2142,7 +2141,7 @@
     if (!candidates.length) return ['目前輸出範圍沒有可輸出的照片。'];
     if (!meta.case) issues.push('尚未填寫「案件／主題」。');
     if (!meta.date) issues.push('尚未填寫「紀錄日期」。');
-    if (!meta.location && candidates.some((index) => !String(state.items[index]?.location || '').trim())) issues.push('文件地點未填寫，且輸出範圍內仍有照片沒有個別地點。');
+    if (candidates.some((index) => !String(state.items[index]?.location || '').trim())) issues.push('輸出範圍內仍有照片沒有個別地點。');
     const missingDesc = state.items.map((item, index) => candidateSet.has(index) && !String(item.description || '').trim() ? index + 1 : null).filter(Boolean);
     if (missingDesc.length) issues.push(`輸出範圍內有 ${missingDesc.length} 張照片尚未填寫照片說明（照片 ${missingDesc.slice(0, 8).map((n) => String(n).padStart(2, '0')).join('、')}${missingDesc.length > 8 ? '…' : ''}）。`);
     const longCount = candidates.filter((index) => itemLayoutCap(state.items[index], meta) < meta.per_page).length;
@@ -2162,7 +2161,7 @@
     state.items.forEach((item, index) => {
       if (!candidateSet.has(index)) return;
       if (!String(item.description || '').trim()) targets.push({ index, label: `照片 ${String(index + 1).padStart(2, '0')}：缺少說明` });
-      else if (!String(item.location || '').trim() && !meta.location) targets.push({ index, label: `照片 ${String(index + 1).padStart(2, '0')}：缺少地點` });
+      else if (!String(item.location || '').trim()) targets.push({ index, label: `照片 ${String(index + 1).padStart(2, '0')}：缺少地點` });
     });
     return targets.slice(0, 30);
   }
@@ -2302,7 +2301,7 @@
     if (!candidates.length) issues.push('目前輸出範圍沒有可輸出的照片。');
     if (!meta.case) issues.push('尚未填寫案件／主題。');
     if (!meta.date) issues.push('尚未填寫紀錄日期。');
-    if (!meta.location && candidates.some((index) => !String(state.items[index]?.location || '').trim())) issues.push('輸出範圍內仍有照片缺少地點。');
+    if (candidates.some((index) => !String(state.items[index]?.location || '').trim())) issues.push('輸出範圍內仍有照片缺少地點。');
     const missing = candidates.filter((index) => !String(state.items[index]?.description || '').trim()).length;
     if (missing) issues.push(`輸出範圍內仍有 ${missing} 張照片缺少照片說明。`);
     return issues;
@@ -2401,7 +2400,7 @@ ${item.compareGroup || ''}
 ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       if (query && !haystack.includes(query)) return;
       if (filterMode === 'missingDesc' && String(item.description || '').trim()) return;
-      if (filterMode === 'missingLocation' && (String(item.location || '').trim() || docLocation)) return;
+      if (filterMode === 'missingLocation' && String(item.location || '').trim()) return;
       if (filterMode === 'heic' && !/hei[cf]/i.test(String(item.sourceFormat || ''))) return;
       if (filterMode === 'annotated' && !sanitizeAnnotations(item.annotations).length) return;
       if (filterMode === 'excluded' && !item.excludeExport) return;
@@ -2810,11 +2809,10 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       return;
     }
 
-    const autoFolderLocation = Boolean($('folderToLocation')?.checked);
     for (const item of accepted) {
       state.items.push({
         id: uid(), blob: item.blob, originalName: item.originalName, displayName: item.displayName,
-        description: '', note: '', location: autoFolderLocation ? item.suggestedLocation : '', rotation: 0, crop: defaultCrop(), annotations: [], section: '', tags: '', compareGroup: '', compareRole: '', excludeExport: false, previewUrl: '', thumbUrl: '',
+        description: '', note: '', location: '', rotation: 0, crop: defaultCrop(), annotations: [], section: '', tags: '', compareGroup: '', compareRole: '', excludeExport: false, previewUrl: '', thumbUrl: '',
         sourceFormat: item.sourceFormat || '', sourceBytes: Number(item.sourceBytes || 0), decoder: item.decoder || '',
         sourceDimensions: item.sourceDimensions || '', normalizedAt: item.normalizedAt || '', privacy: item.privacy || { hasExif: false, hasGps: false },
         capturedAt: item.capturedAt || '', captureSource: item.captureSource || '', sourceFolder: item.sourceFolder || '', importOrder: nextImportOrder(),

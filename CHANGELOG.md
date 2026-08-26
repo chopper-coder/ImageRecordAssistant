@@ -1,3 +1,11 @@
+# CHANGELOG
+
+## V3.8.2 — Batch Rename Workflow Hotfix
+
+- 將「批次重新命名」從「單張照片設定」移至「批次操作」。
+- 保留既有批次重新命名功能、事件 ID 與命名邏輯，不改變舊專案資料。
+- 版本更新至 V3.8.2。
+
 # Changelog
 
 ## V3.8 — Large Project Control & Export Workflow Edition

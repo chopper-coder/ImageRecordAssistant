@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; worker-src 'self' blob:">
-  <title>圖片紀錄整理助手 V3.8｜Large Project Control & Export Workflow Edition</title>
+  <title>圖片紀錄整理助手 V3.8.2｜Batch Rename Workflow Hotfix</title>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
@@ -15,7 +15,7 @@
     <p>可愛貓貓風格｜案件管理｜進階照片註記｜個資遮蔽｜浮水印｜封存</p>
   </div>
   <div class="head-actions">
-    <span class="badge">V3.8</span><span class="autosave-top-badge" id="autosaveTopBadge">💾 尚未自動儲存</span><span class="dirty-badge" id="dirtyBadge" hidden>● 尚未另存</span>
+    <span class="badge">V3.8.2</span><span class="autosave-top-badge" id="autosaveTopBadge">💾 尚未自動儲存</span><span class="dirty-badge" id="dirtyBadge" hidden>● 尚未另存</span>
     <button class="headbtn" id="previewBtn" type="button" title="依目前設定產生實際 PDF 版面預覽">👁 列印版面預覽</button>
   </div>
 </header>
@@ -52,7 +52,6 @@
           <button class="btn danger" id="clearBtn" type="button">全部清除</button>
         </div>
         <div class="workflow-tools">
-          <label class="checkline folder-location"><input id="folderToLocation" type="checkbox" checked>資料夾名稱自動帶入照片地點</label>
           <div class="workflow-row">
             <label for="sortMode">排序</label>
             <select id="sortMode">
@@ -155,10 +154,12 @@
       <div id="photoMeta" class="photo-meta">拍攝時間／來源資料夾：—</div>
       <div class="field"><label for="photoName">照片檔名（可重新命名）</label><input id="photoName" maxlength="260" placeholder="例如：現場照片_01.jpg"></div>
       <div class="toolbar"><button class="btn" id="applyNameBtn" type="button">套用檔名</button><button class="btn" id="restoreNameBtn" type="button">還原原始檔名</button></div>
-      <div class="field"><label for="renamePrefix">批次重新命名</label><input id="renamePrefix" placeholder="例如：現場照片_"></div>
-      <div class="toolbar"><button class="btn" id="batchRenameBtn" type="button">依序重新命名全部照片</button></div>
       <div class="field"><label>照片旋轉</label><div class="toolbar"><button class="btn" id="rotateLeftBtn" type="button">左轉 90°</button><button class="btn" id="rotateRightBtn" type="button">右轉 90°</button><span class="tiny" id="rotateLabel">目前：0°</span></div></div>
-      <div class="field"><label for="photoLocation">照片地點（留白沿用文件地點）</label><input id="photoLocation" maxlength="1000" placeholder="例如：3樓機房"></div>
+      <div class="field"><label for="photoLocation">照片地點</label><input id="photoLocation" maxlength="1000" placeholder="請輸入這張照片的地點"></div>
+      <div class="field"><label>常用說明</label><div class="quick-wrap" id="quickNotes"></div><div class="toolbar"><input id="newQuickNote" maxlength="500" placeholder="新增常用說明" style="flex:1;min-width:160px"><button class="btn" id="addQuickNoteBtn" type="button">新增</button></div></div>
+      <div class="field"><label for="description">照片說明</label><textarea id="description" maxlength="50000" placeholder="請輸入這張照片的說明"></textarea></div>
+      <div class="toolbar smart-copy-toolbar"><button class="btn" id="copyPrevDescBtn" type="button">複製上一張說明</button><button class="btn" id="copyPrevLocationBtn" type="button">複製上一張地點</button><button class="btn" id="copyPrevNoteBtn" type="button">複製上一張備註</button></div>
+      <div class="field"><label for="note">備註（選填）</label><textarea id="note" maxlength="20000" placeholder="有需要再填寫"></textarea></div>
       <div class="row2"><div class="field"><label for="photoSection">照片章節／分類</label><input id="photoSection" maxlength="1000" placeholder="例如：施工前、功能測試"></div><div class="field"><label for="photoTags">標籤</label><input id="photoTags" maxlength="1000" placeholder="例如：設備,缺失,改善後"></div></div>
       <label class="checkline exclude-output-line"><input id="excludeFromExport" type="checkbox">這張照片保留在專案，但不要輸出到 Word / PDF</label>
       <div class="compare-box"><div class="batch-title">前後比較組</div><div class="row2"><div class="field"><label for="compareGroup">比較組名稱</label><input id="compareGroup" maxlength="1000" placeholder="例如：A區改善"></div><div class="field"><label for="compareRole">照片角色</label><select id="compareRole"><option value="">不指定</option><option value="before">改善前</option><option value="after">改善後</option></select></div></div><div class="tiny">同一組的「改善前／改善後」會在照片資訊與輸出文件中清楚標示；相鄰成對照片會優先維持同頁。</div></div>
@@ -166,20 +167,18 @@
       </details>
 
       <details class="form-card cat-section smart-section" id="batchSection">
-        <summary class="section-head"><div class="section-emoji">😺</div><div><h3>批次操作與常用說明</h3><p>勾選 2 張以上時自動展開，批次設定不再一直占畫面。</p></div></summary>
+        <summary class="section-head"><div class="section-emoji">😺</div><div><h3>批次操作</h3><p>勾選 2 張以上時自動展開，只保留真正的批次功能。</p></div></summary>
       <div class="batch-box">
         <div class="batch-title">多選批次操作 <span class="tiny">（使用左側勾選照片）</span></div>
+        <div class="field"><label for="renamePrefix">批次重新命名</label><input id="renamePrefix" placeholder="例如：現場照片_"></div>
+        <div class="toolbar"><button class="btn" id="batchRenameBtn" type="button">依序重新命名全部照片</button></div>
         <div class="field"><label for="batchDescription">批次照片說明</label><textarea id="batchDescription" maxlength="50000" placeholder="輸入後套用到已勾選照片"></textarea></div>
-        <div class="field"><label for="batchLocation">批次照片地點</label><input id="batchLocation" maxlength="1000" placeholder="留白也可以清除個別地點，改沿用文件地點"></div>
+        <div class="field"><label for="batchLocation">批次照片地點</label><input id="batchLocation" maxlength="1000" placeholder="輸入後套用到已勾選照片；留白則清除照片地點"></div>
         <div class="toolbar"><button class="btn" id="applyBatchDescBtn" type="button">套用說明</button><button class="btn" id="applyBatchLocationBtn" type="button">套用地點</button></div>
         <div class="toolbar"><button class="btn" id="batchRotateLeftBtn" type="button">已勾選左轉 90°</button><button class="btn" id="batchRotateRightBtn" type="button">已勾選右轉 90°</button></div>
         <div class="field"><label for="batchSectionName">批次章節／分類</label><input id="batchSectionName" maxlength="1000" placeholder="例如：設備測試"></div>
         <div class="toolbar"><button class="btn" id="applyBatchSectionBtn" type="button">套用章節</button><button class="btn" id="excludeSelectedBtn" type="button">排除已勾選照片輸出</button><button class="btn" id="includeSelectedBtn" type="button">恢復已勾選照片輸出</button></div>
       </div>
-      <div class="field"><label>常用說明</label><div class="quick-wrap" id="quickNotes"></div><div class="toolbar"><input id="newQuickNote" maxlength="500" placeholder="新增常用說明" style="flex:1;min-width:160px"><button class="btn" id="addQuickNoteBtn" type="button">新增</button></div></div>
-      <div class="field"><label for="description">照片說明</label><textarea id="description" maxlength="50000" placeholder="請輸入這張照片的說明"></textarea></div>
-      <div class="toolbar smart-copy-toolbar"><button class="btn" id="copyPrevDescBtn" type="button">複製上一張說明</button><button class="btn" id="copyPrevLocationBtn" type="button">複製上一張地點</button><button class="btn" id="copyPrevNoteBtn" type="button">複製上一張備註</button></div>
-      <div class="field"><label for="note">備註（選填）</label><textarea id="note" maxlength="20000" placeholder="有需要再填寫"></textarea></div>
       </details>
 
       <details class="form-card cat-section cat-export-section smart-section" id="exportSection">
