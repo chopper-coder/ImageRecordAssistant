@@ -1,4 +1,4 @@
-name: Deploy GitHub Pages - V3.8
+name: Deploy GitHub Pages - V3.8.2
 
 on:
   push:
