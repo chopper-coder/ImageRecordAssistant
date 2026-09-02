@@ -273,3 +273,22 @@ header p{color:#fff3fb}
 .photo-row.filter-highlight{outline:1px solid #efb6d3;outline-offset:-1px}
 .export-scope-field{padding:10px;border:1px solid #f0d6e6;border-radius:12px;background:#fffafd}.export-scope-field select{margin-bottom:5px}
 @media(max-width:720px){.import-monitor-grid{grid-template-columns:1fr}.monitor-head{align-items:flex-start;flex-direction:column}.monitor-actions .btn{flex:1 1 100%}}
+
+/* V3.8.3 Temporary Session & Resume Edition */
+.temp-session-box{border:1px solid #efd7e6;background:linear-gradient(135deg,#fff8fc 0%,#fffaf3 100%);border-radius:14px;padding:10px;margin:9px 0}
+.temp-session-head{display:flex;align-items:center;justify-content:space-between;gap:10px;color:#8f587e;font-size:12px;line-height:1.4}
+.temp-session-head strong{font-size:13px;color:#8f4f82}
+#tempSaveStatus{color:#7b6b76;text-align:right}
+.temp-session-actions{margin:8px 0 6px}
+.temp-session-actions .btn{flex:1 1 120px}
+@media(max-width:720px){.temp-session-head{align-items:flex-start;flex-direction:column}.temp-session-head #tempSaveStatus{text-align:left}.temp-session-actions .btn{flex:1 1 100%}}
+
+
+/* V3.8.4 Operation Log & Audit Trail Edition */
+.audit-log-box{border:1px solid #ead5e4;background:linear-gradient(135deg,#fffafd 0%,#fffaf2 100%);border-radius:14px;padding:10px;margin:9px 0}
+.audit-log-head{display:flex;align-items:center;justify-content:space-between;gap:10px;color:#835b74;font-size:12px}.audit-log-head strong{font-size:13px;color:#8d4f80}
+#auditLogCount{white-space:nowrap;color:#786976}.audit-log-recent{display:grid;gap:6px;margin:8px 0;max-height:190px;overflow:auto;padding-right:2px}
+.audit-log-row{display:grid;grid-template-columns:minmax(118px,auto) 1fr;gap:8px;padding:7px 8px;border:1px solid #f0dce8;border-radius:10px;background:#fff;font-size:11px;line-height:1.45}.audit-log-row.warn{background:#fffaf0;border-color:#eedcae}.audit-log-row.error{background:#fff4f5;border-color:#edc6cc}.audit-log-row.ok{background:#f7fff9;border-color:#d9eddf}
+.audit-log-time{color:#8d7886;white-space:nowrap}.audit-log-body{display:flex;gap:6px;min-width:0;flex-wrap:wrap}.audit-log-body strong{color:#78546e}.audit-log-detail{color:#7e7079;overflow-wrap:anywhere}.audit-log-empty{padding:10px;text-align:center;color:#998791;border:1px dashed #eadbe5;border-radius:10px;background:#fffdfd;font-size:11px}
+.audit-log-actions{margin:8px 0 6px}.audit-log-actions .btn{flex:1 1 92px}
+@media(max-width:720px){.audit-log-head{align-items:flex-start;flex-direction:column}.audit-log-row{grid-template-columns:1fr}.audit-log-time{white-space:normal}.audit-log-actions .btn{flex:1 1 46%}}

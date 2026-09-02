@@ -1,13 +1,19 @@
-# V3.8.2 GitHub 更新步驟
+# V3.8.4 GitHub 更新步驟
 
-1. 解壓縮 V3.8.2 ZIP。
-2. 到 `chopper-coder/ImageRecordAssistant`。
-3. `Add file → Upload files`，上傳根目錄檔案並覆蓋同名檔案。
-4. `.github` 若無法拖曳，不必重建資料夾：開啟 GitHub 既有 `.github/workflows/pages.yml`。
-5. 將本包 `PAGES_WORKFLOW_COPY_THIS.yml` 全部內容複製進 `pages.yml`。
-6. Commit message 建議：`更新至 V3.8.2 Single Photo Metadata Workflow Hotfix`。
-7. 到 Actions 確認：`Validate and build Pages`、`Deploy Pages` 都為綠色。
-8. 打開正式網站後按 `Ctrl + F5`，右上角確認為 V3.8.2。
+1. 解壓縮 `ImageRecordAssistant_V3.8.4_Operation_Log_Audit_Trail_Edition.zip`。
+2. 到 GitHub Repository：`chopper-coder/ImageRecordAssistant`。
+3. 選擇 `Add file → Upload files`。
+4. 將 ZIP **根目錄內的檔案**上傳並覆蓋同名檔案，不要把最外層資料夾整個再包一層上傳。
+5. `.github` 若不方便拖曳：開啟 GitHub 現有 `.github/workflows/pages.yml`。
+6. 將本包 `PAGES_WORKFLOW_COPY_THIS.yml` 的全部內容貼進 `pages.yml` 後 Commit。
+7. Commit message 建議：`更新至 V3.8.4 Operation Log & Audit Trail Edition`。
+8. 到 **Actions** 確認 `Validate and build Pages` 與 `Deploy Pages` 都是綠色。
+9. 打開正式網站後按 `Ctrl + F5`，確認右上角版本為 **V3.8.4**。
 
+## 更新後建議測試
 
-V3.8.2 僅調整批次重新命名的 UI 歸類；更新網站檔案後，請同步更新 pages.yml。
+- 匯入 2～3 張照片後，確認「操作紀錄」筆數增加。
+- 修改單張照片說明後離開欄位，確認只記錄「修改照片說明」，不顯示說明全文。
+- 分別匯出 TXT / CSV / JSON。
+- 暫存 → 關閉／重新開啟 → 續編，確認操作紀錄仍在。
+- 儲存 `.photojob` 後重新開啟，確認紀錄仍可繼續累積。

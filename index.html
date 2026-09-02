@@ -5,17 +5,17 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; worker-src 'self' blob:">
-  <title>圖片紀錄整理助手 V3.8.2｜Batch Rename Workflow Hotfix</title>
+  <title>圖片紀錄整理助手 V3.8.4｜Operation Log & Audit Trail Edition</title>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
 <header>
   <div>
     <h1>圖片紀錄整理助手 🐾</h1>
-    <p>可愛貓貓風格｜案件管理｜進階照片註記｜個資遮蔽｜浮水印｜封存</p>
+    <p>可愛貓貓風格｜案件管理｜操作紀錄｜進階照片註記｜個資遮蔽｜封存</p>
   </div>
   <div class="head-actions">
-    <span class="badge">V3.8.2</span><span class="autosave-top-badge" id="autosaveTopBadge">💾 尚未自動儲存</span><span class="dirty-badge" id="dirtyBadge" hidden>● 尚未另存</span>
+    <span class="badge">V3.8.4</span><span class="autosave-top-badge" id="autosaveTopBadge">💾 尚未自動儲存</span><span class="dirty-badge" id="dirtyBadge" hidden>● 尚未另存</span>
     <button class="headbtn" id="previewBtn" type="button" title="依目前設定產生實際 PDF 版面預覽">👁 列印版面預覽</button>
   </div>
 </header>
@@ -88,6 +88,26 @@
             <span id="importFailureText">失敗 0 張</span>
           </div>
           <div class="toolbar monitor-actions"><button class="btn" id="retryFailedImportsBtn" type="button" disabled>重試失敗照片</button><button class="btn" id="clearImportSummaryBtn" type="button">清除匯入摘要</button></div>
+        </div>
+        <div class="temp-session-box" id="tempSessionBox">
+          <div class="temp-session-head"><strong>🕒 暫存工作階段</strong><span id="tempSaveStatus">尚無手動暫存</span></div>
+          <div class="toolbar temp-session-actions">
+            <button class="btn primary" id="tempSaveBtn" type="button">💾 暫存目前工作</button>
+            <button class="btn" id="tempResumeBtn" type="button" disabled>▶ 繼續上次暫存</button>
+            <button class="btn danger" id="tempClearBtn" type="button" disabled>清除暫存</button>
+          </div>
+          <div class="tiny">暫存在目前瀏覽器／裝置中；關閉網站後仍可續編。清除瀏覽器網站資料會一併刪除，跨電腦請使用 .photojob。</div>
+        </div>
+        <div class="audit-log-box" id="auditLogBox">
+          <div class="audit-log-head"><strong>🧾 操作紀錄與稽核追蹤</strong><span id="auditLogCount">操作紀錄：0 筆</span></div>
+          <div id="auditLogRecent" class="audit-log-recent" aria-live="polite"><div class="audit-log-empty">尚無操作紀錄。</div></div>
+          <div class="toolbar audit-log-actions">
+            <button class="btn" id="exportAuditTxtBtn" type="button" disabled>匯出 TXT</button>
+            <button class="btn" id="exportAuditCsvBtn" type="button" disabled>匯出 CSV</button>
+            <button class="btn" id="exportAuditJsonBtn" type="button" disabled>匯出 JSON</button>
+            <button class="btn danger" id="clearAuditLogBtn" type="button" disabled>清除紀錄</button>
+          </div>
+          <div class="tiny">只記錄重要操作與時間；操作項目不另外抄錄單張照片的說明、備註或照片地點全文。TXT/JSON 匯出表頭仍會列案件基本資料。紀錄會隨本機暫存與 .photojob 保存；本功能屬操作追蹤輔助資料，並非不可竄改的電子稽核憑證。</div>
         </div>
         <div class="toolbar project-toolbar">
           <button class="btn" id="saveProjectBtn" type="button">儲存 .photojob</button>

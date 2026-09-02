@@ -7,7 +7,7 @@
   }
 
   const APP_NAME = '圖片紀錄整理助手';
-  const APP_VERSION = 'V3.8.2';
+  const APP_VERSION = 'V3.8.4';
   const PHOTOJOB_SCHEMA_VERSION = 2;
   const HISTORY_LIMIT = 30;
   const SUPPORTED_RE = /\.(jpe?g|png|webp|bmp|heic|heif)$/i;
@@ -35,6 +35,11 @@
   const AUTOSAVE_KEY = 'current';
   const CASE_TEMPLATE_KEY = 'ImageRecordAssistantV31.caseTemplates';
   const AUTOSAVE_PREF_KEY = 'ImageRecordAssistantV31.autosaveEnabled';
+  const TEMP_SESSION_MARKER_KEY = 'ImageRecordAssistantV383.tempSessionMarker';
+  const MAX_OPERATION_LOG_ENTRIES = 1500;
+  const MAX_OPERATION_LOG_ACTION_CHARS = 80;
+  const MAX_OPERATION_LOG_DETAIL_CHARS = 600;
+  const MAX_OPERATION_LOG_CATEGORY_CHARS = 40;
   const MAX_PHOTOS_HARD = 800;
   const MAX_SINGLE_IMAGE_BYTES = 40 * 1024 * 1024;
   const DEFAULT_MAX_TOTAL_IMAGE_BYTES = 768 * 1024 * 1024;
@@ -86,6 +91,7 @@
     nativeHeicSupport: null,
     nativeHeicProbePromise: null,
     autosaveInFlight: null,
+    tempSessionMarker: null,
     activeImageWorker: null,
     activeImageCancel: null,
     healthRunning: false,
@@ -106,6 +112,8 @@
     failedImports: [],
     lastImportSummary: null,
     importProgress: { active: false, total: 0, completed: 0, heicTotal: 0, heicDone: 0, failed: 0 },
+    operationLog: [],
+    sessionId: '',
     };
 
 
@@ -325,6 +333,181 @@
     } catch (_) {
       return date.toLocaleString();
     }
+  }
+
+  function sanitizeOperationLogEntry(raw) {
+    if (!isPlainObject(raw)) return null;
+    const cleanText = (value, max) => String(value ?? '').replace(/[\u0000-\u001F\u007F]/g, ' ').trim().slice(0, max);
+    const timestamp = String(raw.timestamp || raw.time || '').slice(0, 64);
+    const parsed = timestamp ? new Date(timestamp) : null;
+    const safeTimestamp = parsed && !Number.isNaN(parsed.getTime()) ? parsed.toISOString() : new Date().toISOString();
+    const action = cleanText(raw.action, MAX_OPERATION_LOG_ACTION_CHARS);
+    if (!action) return null;
+    return {
+      id: cleanText(raw.id || uid(), MAX_PROJECT_FIELD_CHARS),
+      timestamp: safeTimestamp,
+      category: cleanText(raw.category || '一般', MAX_OPERATION_LOG_CATEGORY_CHARS) || '一般',
+      action,
+      detail: cleanText(raw.detail, MAX_OPERATION_LOG_DETAIL_CHARS),
+      level: ['info', 'ok', 'warn', 'error'].includes(raw.level) ? raw.level : 'info',
+      session_id: cleanText(raw.session_id || raw.sessionId, MAX_PROJECT_FIELD_CHARS),
+      app_version: cleanText(raw.app_version || APP_VERSION, 80),
+    };
+  }
+
+  function sanitizedOperationLog(value = state.operationLog) {
+    if (!Array.isArray(value)) return [];
+    return value.map(sanitizeOperationLogEntry).filter(Boolean).slice(-MAX_OPERATION_LOG_ENTRIES);
+  }
+
+  function renderOperationLog() {
+    const count = $('auditLogCount');
+    const recent = $('auditLogRecent');
+    const clearBtn = $('clearAuditLogBtn');
+    const exportButtons = ['exportAuditTxtBtn', 'exportAuditCsvBtn', 'exportAuditJsonBtn'];
+    const entries = sanitizedOperationLog();
+    if (count) count.textContent = `操作紀錄：${entries.length} 筆`;
+    if (clearBtn) clearBtn.disabled = entries.length === 0;
+    exportButtons.forEach((id) => { if ($(id)) $(id).disabled = entries.length === 0; });
+    if (!recent) return;
+    recent.innerHTML = '';
+    if (!entries.length) {
+      recent.appendChild(createEl('div', 'audit-log-empty', '尚無操作紀錄。'));
+      return;
+    }
+    entries.slice(-8).reverse().forEach((entry) => {
+      const row = createEl('div', `audit-log-row ${entry.level || 'info'}`);
+      const parsed = new Date(entry.timestamp);
+      const time = Number.isNaN(parsed.getTime()) ? entry.timestamp : parsed.toLocaleString('zh-TW', { hour12: false });
+      row.appendChild(createEl('span', 'audit-log-time', time));
+      const body = createEl('span', 'audit-log-body');
+      body.appendChild(createEl('strong', '', entry.action));
+      if (entry.detail) body.appendChild(createEl('span', 'audit-log-detail', entry.detail));
+      row.appendChild(body);
+      recent.appendChild(row);
+    });
+  }
+
+  function recordOperation(action, detail = '', options = {}) {
+    if (state.restoring && !options.force) return null;
+    if (!state.sessionId) state.sessionId = uid();
+    const entry = sanitizeOperationLogEntry({
+      id: uid(),
+      timestamp: new Date().toISOString(),
+      category: options.category || '一般',
+      action,
+      detail,
+      level: options.level || 'info',
+      session_id: state.sessionId,
+      app_version: APP_VERSION,
+    });
+    if (!entry) return null;
+    state.operationLog.push(entry);
+    if (state.operationLog.length > MAX_OPERATION_LOG_ENTRIES) state.operationLog.splice(0, state.operationLog.length - MAX_OPERATION_LOG_ENTRIES);
+    renderOperationLog();
+    return entry;
+  }
+
+  function auditPhotoLabel(item = state.items[state.selected], index = state.selected) {
+    if (!item) return '未選取照片';
+    return `照片 ${String(Math.max(0, index) + 1).padStart(2, '0')}｜${String(item.displayName || item.originalName || '未命名').slice(0, 160)}`;
+  }
+
+  function operationLogExportEnvelope() {
+    const meta = metaPayload();
+    const candidates = exportCandidateIndices(meta);
+    return {
+      format: 'ImageRecordAssistant.operation-log',
+      app_name: APP_NAME,
+      app_version: APP_VERSION,
+      exported_at: new Date().toISOString(),
+      project: {
+        title: meta.title || '',
+        case: meta.case || '',
+        case_no: meta.case_no || '',
+        record_date: meta.date || '',
+        document_location: meta.location || '',
+        photo_count: state.items.length,
+        export_candidate_count: candidates.length,
+        excluded_count: state.items.filter((item) => item.excludeExport).length,
+      },
+      entries: sanitizedOperationLog(),
+      note: '本紀錄由瀏覽器本機產生，屬操作追蹤輔助資料，並非不可竄改之電子稽核憑證。',
+    };
+  }
+
+  function auditFilenameStem() {
+    const base = safeFilename($('caseName')?.value || $('title')?.value || '照片紀錄專案');
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+    return `${base}_操作紀錄_${stamp}`;
+  }
+
+  function csvAuditCell(value) {
+    let text = String(value ?? '').replace(/\r?\n/g, ' ');
+    if (/^[=+\-@]/.test(text)) text = `'${text}`;
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+
+  function auditLogToText(envelope) {
+    const p = envelope.project;
+    const lines = [
+      `${APP_NAME} ${APP_VERSION}｜操作紀錄`,
+      `匯出時間：${localDateTimeString(new Date(envelope.exported_at))}`,
+      `文件標題：${p.title || '—'}`,
+      `案件／主題：${p.case || '—'}`,
+      `案件編號：${p.case_no || '—'}`,
+      `紀錄日期：${p.record_date || '—'}`,
+      `文件地點：${p.document_location || '—'}`,
+      `照片總數：${p.photo_count}｜目前可輸出：${p.export_candidate_count}｜排除輸出：${p.excluded_count}`,
+      '',
+      `操作紀錄（${envelope.entries.length} 筆）`,
+      '------------------------------------------------------------',
+    ];
+    envelope.entries.forEach((entry, index) => {
+      const parsed = new Date(entry.timestamp);
+      const when = Number.isNaN(parsed.getTime()) ? entry.timestamp : localDateTimeString(parsed);
+      lines.push(`${String(index + 1).padStart(4, '0')}｜${when}｜${entry.category}｜${entry.action}${entry.detail ? `｜${entry.detail}` : ''}`);
+    });
+    lines.push('', envelope.note);
+    return lines.join('\r\n');
+  }
+
+  function auditLogToCsv(envelope) {
+    const p = envelope.project;
+    const rows = [['序號', '時間', '分類', '操作', '說明', '層級', '工作階段', '版本', '文件標題', '案件／主題', '案件編號', '紀錄日期', '照片總數']];
+    envelope.entries.forEach((entry, index) => rows.push([
+      index + 1, entry.timestamp, entry.category, entry.action, entry.detail, entry.level, entry.session_id, entry.app_version,
+      p.title, p.case, p.case_no, p.record_date, p.photo_count,
+    ]));
+    return '\ufeff' + rows.map((row) => row.map(csvAuditCell).join(',')).join('\r\n');
+  }
+
+  async function exportOperationLog(format) {
+    const entries = sanitizedOperationLog();
+    if (!entries.length) return setStatus('目前沒有操作紀錄可匯出。', 'err');
+    const upper = String(format || '').toUpperCase();
+    if (!['TXT', 'CSV', 'JSON'].includes(upper)) return;
+    recordOperation('匯出操作紀錄', `格式：${upper}`, { category: '稽核', level: 'ok' });
+    const envelope = operationLogExportEnvelope();
+    const stem = auditFilenameStem();
+    if (upper === 'TXT') {
+      downloadBlob(new Blob(['\ufeff' + auditLogToText(envelope)], { type: 'text/plain;charset=utf-8' }), `${stem}.txt`);
+    } else if (upper === 'CSV') {
+      downloadBlob(new Blob([auditLogToCsv(envelope)], { type: 'text/csv;charset=utf-8' }), `${stem}.csv`);
+    } else {
+      downloadBlob(new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json;charset=utf-8' }), `${stem}.json`);
+    }
+    setStatus(`操作紀錄 ${upper} 已匯出，共 ${envelope.entries.length} 筆。`, 'ok');
+  }
+
+  function clearOperationLog() {
+    if (!state.operationLog.length) return;
+    const oldCount = state.operationLog.length;
+    if (!confirm(`確定清除目前 ${oldCount} 筆操作紀錄嗎？建議先匯出備份。`)) return;
+    state.operationLog = [];
+    recordOperation('清除操作紀錄', `使用者已清除先前 ${oldCount} 筆紀錄。`, { category: '稽核', level: 'warn' });
+    setStatus('操作紀錄已清除；已保留一筆「清除紀錄」事件作為提示。', 'ok');
   }
 
   function deviceMemoryGb() {
@@ -1258,7 +1441,7 @@
       badge.hidden = !state.dirty;
       badge.textContent = state.dirty ? '● 尚未另存' : '';
     }
-    document.title = `${state.dirty ? '● ' : ''}${APP_NAME} ${APP_VERSION}｜Batch Rename Workflow Hotfix`;
+    document.title = `${state.dirty ? '● ' : ''}${APP_NAME} ${APP_VERSION}｜Operation Log & Audit Trail Edition`;
   }
 
   function refreshDirtyState() {
@@ -1308,7 +1491,7 @@
   async function applyHistorySnapshot(snapshot) {
     state.restoring = true;
     try {
-      await applyProjectData(snapshot);
+      await applyProjectData(snapshot, { preserveOperationLog: true });
       state.historyCurrent = captureEditableSnapshot();
       refreshDirtyState();
       await saveAutosaveNow();
@@ -1325,6 +1508,7 @@
     state.historyRedo.push(current);
     if (state.historyRedo.length > HISTORY_LIMIT) state.historyRedo.shift();
     await applyHistorySnapshot(previous);
+    recordOperation('復原操作', '已回到上一個可復原的專案狀態。', { category: '編輯', level: 'ok' });
     setStatus('已復原上一個操作。', 'ok');
     updateButtons();
   }
@@ -1337,6 +1521,7 @@
     state.historyUndo.push(current);
     if (state.historyUndo.length > HISTORY_LIMIT) state.historyUndo.shift();
     await applyHistorySnapshot(next);
+    recordOperation('重做操作', '已重新套用下一個專案狀態。', { category: '編輯', level: 'ok' });
     setStatus('已重做上一個操作。', 'ok');
     updateButtons();
   }
@@ -2129,6 +2314,7 @@
       showSelected();
       renderHealthResults(result);
       $('healthModal').classList.add('show');
+      recordOperation('專案健康檢查', `錯誤 ${result.errors.length}｜提醒 ${result.warnings.length}｜健康度 ${healthScore(result)}/100`, { category: '檢查', level: result.errors.length ? 'error' : (result.warnings.length ? 'warn' : 'ok') });
       setStatus(result.errors.length ? `專案健康檢查完成：發現 ${result.errors.length} 項阻斷問題。` : `專案健康檢查完成：${result.warnings.length ? `有 ${result.warnings.length} 項提醒` : '狀態正常'}。`, result.errors.length ? 'err' : 'ok');
     } finally { state.healthRunning = false; hideLoading(); }
   }
@@ -2214,6 +2400,7 @@
     $('continueExportBtn').hidden = !pendingExport || critical.length > 0 || issues.length === 0;
     $('cancelPreflightBtn').textContent = (issues.length || critical.length) ? '返回補填' : '關閉';
     $('preflightModal').classList.add('show');
+    recordOperation('輸出前缺漏檢查', `阻斷 ${critical.length}｜提醒 ${issues.length}`, { category: '檢查', level: critical.length ? 'error' : (issues.length ? 'warn' : 'ok') });
     return { issues, critical };
   }
 
@@ -2285,7 +2472,7 @@
   function applyArchiveMode() {
     const archived = Boolean(state.caseArchived);
     document.body.classList.toggle('case-archived', archived);
-    const keepEnabled = new Set(['saveProjectBtn','openProjectBtn','previewBtn','wordBtn','pdfBtn','bothBtn','archiveProjectBtn','projectInput','photoFilter']);
+    const keepEnabled = new Set(['saveProjectBtn','openProjectBtn','previewBtn','wordBtn','pdfBtn','bothBtn','archiveProjectBtn','projectInput','photoFilter','tempSaveBtn','tempResumeBtn','tempClearBtn']);
     document.querySelectorAll('input,textarea,select,button').forEach((el) => {
       if (!el.id || keepEnabled.has(el.id) || el.closest('.modal')) return;
       if (archived) { if (!el.disabled) el.dataset.archiveDisabled = '1'; el.disabled = true; }
@@ -2310,12 +2497,12 @@
   function toggleArchiveProject() {
     if (state.caseArchived) {
       if (!confirm('確定解除案件封存並重新允許編輯嗎？')) return;
-      state.caseArchived = false; state.caseArchivedAt = ''; applyArchiveMode(); updateButtons(); scheduleAutosave(); setStatus('已解除案件封存，可繼續編輯。', 'ok'); return;
+      state.caseArchived = false; state.caseArchivedAt = ''; applyArchiveMode(); updateButtons(); scheduleAutosave(); recordOperation('解除案件封存', '案件已恢復為可編輯狀態。', { category: '案件', level: 'warn' }); setStatus('已解除案件封存，可繼續編輯。', 'ok'); return;
     }
     const blockers = completionBlockingIssues();
     if (blockers.length) { openPreflight(null); setStatus('案件仍有必要欄位或版面阻斷問題，請先修正後再封存。', 'err'); return; }
     if (!confirm('所有檢查已通過。封存後將切換為唯讀模式，確定完成案件並封存嗎？')) return;
-    state.caseArchived = true; state.caseArchivedAt = new Date().toISOString(); applyArchiveMode(); scheduleAutosave(); setStatus('案件已完成並封存；請再儲存 .photojob 作為正式封存檔。', 'ok');
+    state.caseArchived = true; state.caseArchivedAt = new Date().toISOString(); applyArchiveMode(); scheduleAutosave(); recordOperation('案件封存', '案件完成檢查並切換為唯讀模式。', { category: '案件', level: 'ok' }); setStatus('案件已完成並封存；請再儲存 .photojob 作為正式封存檔。', 'ok');
   }
 
   function updateButtons() {
@@ -2336,6 +2523,8 @@
     ['photoSection','photoTags','compareGroup','compareRole','excludeFromExport'].forEach((id) => { if ($(id)) $(id).disabled = !ok; });
     $('batchRenameBtn').disabled = !state.items.length;
     $('saveProjectBtn').disabled = !state.items.length;
+    if ($('tempSaveBtn')) $('tempSaveBtn').disabled = !state.items.length;
+    renderTempSessionStatus();
     $('previewBtn').disabled = !state.items.length;
     ['wordBtn', 'pdfBtn', 'bothBtn', 'preflightBtn', 'healthBtn'].forEach((id) => { $(id).disabled = !state.items.length; });
     ['applyBatchDescBtn', 'applyBatchLocationBtn', 'batchRotateLeftBtn', 'batchRotateRightBtn', 'clearSelectionBtn', 'applyBatchSectionBtn', 'excludeSelectedBtn', 'includeSelectedBtn']
@@ -2620,6 +2809,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
         if (state.selected < 0) return;
         state.items[state.selected].description = noteText;
         $('description').value = noteText;
+        recordOperation('套用常用說明', `${auditPhotoLabel()}｜不保存說明全文`, { category: '單張照片', level: 'ok' });
         scheduleAutosave();
       });
       wrap.appendChild(button);
@@ -2805,6 +2995,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     renderLargeProjectMonitor();
     if (!accepted.length) {
       const stopText = stopped ? '匯入已停止。' : '沒有照片成功加入。';
+      recordOperation('匯入照片', `成功 0｜略過 ${skipped.length}｜失敗 ${newFailures.length}${stopped ? '｜使用者停止' : ''}`, { category: '匯入', level: stopped ? 'warn' : 'error' });
       setStatus(skipped.length ? `${stopText}${skipped.slice(0, 2).join('；')}` : stopText, stopped ? '' : 'err');
       return;
     }
@@ -2828,6 +3019,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     const folderText = accepted.some((item) => item.sourceFolder) ? '；已保留資料夾來源資訊' : '';
     const skippedText = skipped.length ? `；另略過 ${skipped.length} 項（${skipped.slice(0, 2).join('；')}${skipped.length > 2 ? '…' : ''}）` : '';
     const stoppedText = stopped ? '；使用者已停止後續匯入' : '';
+    recordOperation('匯入照片', `成功 ${accepted.length}｜HEIC/HEIF ${convertedHeic}｜略過 ${skipped.length}｜失敗 ${newFailures.length}｜目前共 ${state.items.length} 張${stopped ? '｜使用者停止' : ''}`, { category: '匯入', level: newFailures.length || skipped.length ? 'warn' : 'ok' });
     setStatus(`已加入 ${accepted.length} 張，目前共 ${state.items.length} 張${heicText}${folderText}${skippedText}${stoppedText}。`, skipped.length ? 'err' : 'ok');
     renderLargeProjectMonitor();
     scheduleAutosave();
@@ -2849,6 +3041,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     item.displayName = buildDisplayName($('photoName').value, item.originalName);
     refreshPhotoListRow(item.id);
     showSelected();
+    recordOperation('修改照片檔名', auditPhotoLabel(item), { category: '單張照片', level: 'ok' });
     setStatus('已更新照片檔名。', 'ok');
     scheduleAutosave();
   }
@@ -2865,6 +3058,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     });
     renderList();
     showSelected();
+    recordOperation('批次重新命名', `共 ${state.items.length} 張照片。`, { category: '批次', level: 'ok' });
     setStatus('已完成批次重新命名。', 'ok');
     scheduleAutosave();
   }
@@ -2878,6 +3072,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     if ($('sortMode')) $('sortMode').value = 'manual';
     renderList();
     showSelected();
+    recordOperation('調整照片順序', `移動後位置：${state.selected + 1}`, { category: '排序', level: 'ok' });
     scheduleAutosave();
   }
 
@@ -2888,6 +3083,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     const value = $('batchDescription').value;
     items.forEach((item) => { item.description = value; });
     showSelected();
+    recordOperation('批次套用照片說明', `共 ${items.length} 張；操作紀錄不保存說明全文。`, { category: '批次', level: 'ok' });
     setStatus(`已將照片說明套用到 ${items.length} 張照片。`, 'ok'); scheduleAutosave();
   }
 
@@ -2897,6 +3093,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     const value = $('batchLocation').value.trim();
     items.forEach((item) => { item.location = value; });
     showSelected();
+    recordOperation('批次套用照片地點', `共 ${items.length} 張；操作紀錄不保存地點全文。`, { category: '批次', level: 'ok' });
     setStatus(`已將照片地點套用到 ${items.length} 張照片。`, 'ok'); scheduleAutosave();
   }
 
@@ -2908,6 +3105,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       item.annotations = rotateAnnotations(item.annotations, delta);
     });
     showSelected(); refreshListSelectionState();
+    recordOperation('批次旋轉照片', `共 ${items.length} 張｜${delta > 0 ? '右轉' : '左轉'} 90°`, { category: '批次', level: 'ok' });
     setStatus(`已旋轉 ${items.length} 張照片。`, 'ok'); scheduleAutosave();
   }
 
@@ -2917,6 +3115,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     const value = String($('batchSectionName')?.value || '').trim().slice(0, MAX_META_TEXT_CHARS);
     items.forEach((item) => { item.section = value; refreshPhotoListRow(item.id); });
     showSelected();
+    recordOperation('批次設定章節／分類', `共 ${items.length} 張；操作紀錄不保存分類全文。`, { category: '批次', level: 'ok' });
     setStatus(`已將章節／分類套用到 ${items.length} 張照片。`, 'ok');
     scheduleAutosave();
   }
@@ -2926,6 +3125,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     if (!items.length) return setStatus('請先在左側勾選照片。', 'err');
     items.forEach((item) => { item.excludeExport = Boolean(excluded); refreshPhotoListRow(item.id); });
     renderList(); showSelected(); renderExportScopeStatus();
+    recordOperation(excluded ? '批次排除輸出' : '批次恢復輸出', `共 ${items.length} 張照片。`, { category: '輸出設定', level: 'ok' });
     setStatus(`${excluded ? '已排除' : '已恢復'} ${items.length} 張照片的 Word / PDF 輸出。`, 'ok');
     scheduleAutosave();
   }
@@ -2937,12 +3137,14 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     refreshPhotoListRow(item.id);
     if (($('photoFilterMode')?.value || 'all') === 'excluded') renderList();
     renderExportScopeStatus(); renderDashboard();
+    recordOperation(value ? '排除單張照片輸出' : '恢復單張照片輸出', auditPhotoLabel(item), { category: '輸出設定', level: 'ok' });
     scheduleAutosave();
   }
 
   async function retryFailedImports() {
     if (!state.failedImports.length || state.importRunning) return;
     const retry = state.failedImports.map((entry) => ({ file: entry.file, relativePath: entry.relativePath || '' }));
+    recordOperation('重試失敗照片', `共 ${retry.length} 張。`, { category: '匯入', level: 'warn' });
     setStatus(`正在重試 ${retry.length} 張失敗照片…`);
     await addFiles(retry, { retry: true });
   }
@@ -3074,6 +3276,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
         section: item.section || '', tags: item.tags || '', compare_group: item.compareGroup || '', compare_role: item.compareRole || '', exclude_export: Boolean(item.excludeExport),
       })),
       logo: state.logo ? { name: state.logo.name, blob: state.logo.blob } : null,
+      operation_log: sanitizedOperationLog(),
       saved_at: new Date().toISOString(),
     };
   }
@@ -3189,9 +3392,9 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     });
   }
 
-  async function saveAutosaveNow() {
+  async function saveAutosaveNow(force = false, markTemp = false) {
     renderTopAutosaveBadge();
-    if (state.restoring || !state.autosaveEnabled) return true;
+    if (state.restoring || (!state.autosaveEnabled && !force)) return true;
     if (state.autosaveInFlight) return state.autosaveInFlight;
     state.autosaveInFlight = (async () => {
       try {
@@ -3207,6 +3410,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
         state.autosaveFailed = false;
         state.autosaveLastError = '';
         state.lastAutosaveAt = new Date();
+        if (markTemp || readTempSessionMarker()) writeTempSessionMarker();
         writeRecoveryJournal();
         renderAutosaveHealth();
         return true;
@@ -3238,6 +3442,100 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     writeRecoveryJournal();
     state.autosaveTimer = setTimeout(() => { state.autosaveTimer = null; renderTopAutosaveBadge(); saveAutosaveNow(); }, AUTOSAVE_DELAY_MS);
     renderTopAutosaveBadge();
+  }
+
+  function readTempSessionMarker() {
+    try {
+      const raw = localStorage.getItem(TEMP_SESSION_MARKER_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (isPlainObject(parsed) && parsed.saved_at) state.tempSessionMarker = parsed;
+      }
+    } catch (_) {}
+    return state.tempSessionMarker;
+  }
+
+  function writeTempSessionMarker() {
+    const marker = {
+      saved_at: new Date().toISOString(),
+      photo_count: state.items.length,
+      case_name: String($('caseName')?.value || '').trim().slice(0, MAX_PROJECT_FIELD_CHARS),
+      app_version: APP_VERSION,
+    };
+    state.tempSessionMarker = marker;
+    try { localStorage.setItem(TEMP_SESSION_MARKER_KEY, JSON.stringify(marker)); } catch (_) {}
+    renderTempSessionStatus();
+    return marker;
+  }
+
+  function clearTempSessionMarker() {
+    state.tempSessionMarker = null;
+    try { localStorage.removeItem(TEMP_SESSION_MARKER_KEY); } catch (_) {}
+    renderTempSessionStatus();
+  }
+
+  function renderTempSessionStatus() {
+    const status = $('tempSaveStatus');
+    const resumeBtn = $('tempResumeBtn');
+    const clearBtn = $('tempClearBtn');
+    if (!status && !resumeBtn && !clearBtn) return;
+    const marker = readTempSessionMarker();
+    if (!marker) {
+      if (status) status.textContent = '尚無手動暫存';
+      if (resumeBtn) resumeBtn.disabled = true;
+      if (clearBtn) clearBtn.disabled = true;
+      return;
+    }
+    const parsed = new Date(marker.saved_at);
+    const when = Number.isNaN(parsed.getTime()) ? '時間未知' : parsed.toLocaleString('zh-TW', { hour12: false });
+    const caseLabel = marker.case_name ? `｜${marker.case_name}` : '';
+    if (status) status.textContent = `上次暫存：${when}｜${Number(marker.photo_count || 0)} 張${caseLabel}`;
+    if (resumeBtn) resumeBtn.disabled = false;
+    if (clearBtn) clearBtn.disabled = false;
+  }
+
+  async function saveTemporarySession() {
+    if (!state.items.length) return setStatus('目前沒有照片可暫存。', 'err');
+    setStatus('正在暫存目前工作階段…');
+    const ok = await saveAutosaveNow(true, true);
+    if (!ok) return;
+    renderTempSessionStatus();
+    recordOperation('手動暫存工作階段', `共 ${state.items.length} 張照片。`, { category: '暫存', level: 'ok' });
+    await saveAutosaveNow(true, true);
+    setStatus(`已暫存目前工作，共 ${state.items.length} 張照片。下次使用同一瀏覽器可直接續編。`, 'ok');
+  }
+
+  async function resumeTemporarySession(options = {}) {
+    const marker = readTempSessionMarker();
+    if (!marker) return setStatus('目前沒有手動暫存可續編。', 'err');
+    const data = await readAutosave();
+    if (!data?.photos?.length) {
+      clearTempSessionMarker();
+      return setStatus('暫存標記存在，但暫存內容已被瀏覽器清除。', 'err');
+    }
+    if (!options.skipConfirm && state.items.length) {
+      if (!confirm('繼續上次暫存會取代目前畫面中的專案。確定要繼續嗎？')) return false;
+    }
+    try {
+      await applyProjectData(data);
+      resetHistoryBaseline(false);
+      renderTempSessionStatus();
+      recordOperation('繼續上次暫存', `已還原 ${state.items.length} 張照片。`, { category: '暫存', level: 'ok' });
+      setStatus(`已繼續上次暫存，共 ${state.items.length} 張照片；此內容仍建議完成後另存 .photojob。`, 'ok');
+      return true;
+    } catch (error) {
+      console.warn(error);
+      setStatus(`暫存還原失敗：${error.message}`, 'err');
+      return false;
+    }
+  }
+
+  async function clearTemporarySession() {
+    if (!readTempSessionMarker()) return;
+    if (!confirm('確定清除「手動暫存」標記嗎？目前畫面與自動復原資料不會被刪除。')) return;
+    clearTempSessionMarker();
+    recordOperation('清除手動暫存標記', '僅移除手動暫存標記；目前畫面內容仍保留。', { category: '暫存', level: 'warn' });
+    setStatus(state.autosaveEnabled ? '手動暫存標記已清除；自動儲存仍會繼續保護目前專案。' : '手動暫存標記已清除；目前畫面內容仍保留。', 'ok');
   }
 
   async function readAutosave() {
@@ -3300,10 +3598,12 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       await clearAutosave();
       await deleteAutosaveDatabase();
       localStorage.removeItem(CASE_TEMPLATE_KEY);
+      clearTempSessionMarker();
       state.caseTemplates = [];
       renderCaseTemplates();
       renderAutosaveHealth();
-      setStatus('本機自動儲存與案件範本已確實清除，且已停用自動儲存；目前畫面中的照片仍保留。', 'ok');
+      recordOperation('清除本機專案資料', '已刪除 IndexedDB 自動儲存、復原紀錄、案件範本與手動暫存標記；目前畫面仍保留。', { category: '隱私', level: 'warn' });
+      setStatus('本機暫存、自動儲存與案件範本已確實清除，且已停用自動儲存；目前畫面中的照片仍保留。', 'ok');
       return true;
     } catch (error) {
       setStatus(`清除本機資料失敗：${error.message}`, 'err');
@@ -3311,11 +3611,12 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     }
   }
 
-  async function applyProjectData(data) {
+  async function applyProjectData(data, options = {}) {
     state.restoring = true;
     try {
       revokeStateUrls();
       state.failedImports = []; state.lastImportSummary = null; state.importProgress = { active: false, total: 0, completed: 0, heicTotal: 0, heicDone: 0, failed: 0 };
+      if (!options.preserveOperationLog) state.operationLog = sanitizedOperationLog(data.operation_log || []);
       state.items = [];
       state.selectedIds.clear();
       const photos = data.photos || [];
@@ -3372,6 +3673,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       renderList();
       showSelected();
       applyArchiveMode();
+      renderOperationLog();
     } finally {
       state.restoring = false;
     }
@@ -3412,6 +3714,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       return false;
     }
 
+    recordOperation('建立 .photojob 備份', `共 ${state.items.length} 張照片；開始建立 Schema ${PHOTOJOB_SCHEMA_VERSION} 專案檔。`, { category: '專案', level: 'info' });
     showLoading('正在建立 .photojob 專案檔…', '正在計算 SHA-256 完整性驗證碼。');
     try {
       const zip = new JSZip();
@@ -3419,6 +3722,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
         format: 'ImageRecordAssistant.photojob', schema_version: PHOTOJOB_SCHEMA_VERSION, app_version: APP_VERSION,
         meta: metaPayload(), quick_notes: [...state.quickNotes], selected: state.selected,
         selected_ids: [...state.selectedIds], photos: [], logo: null,
+        operation_log: sanitizedOperationLog(),
       };
       const fileHashes = {};
       for (let i = 0; i < state.items.length; i += 1) {
@@ -3474,9 +3778,11 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
 
       commitHistoryCheckpoint();
       state.lastSavedSignature = snapshotSignature(); state.dirty = false; updateDirtyIndicator();
+      recordOperation('儲存 .photojob', `共 ${state.items.length} 張照片｜Schema ${PHOTOJOB_SCHEMA_VERSION}｜SHA-256 完整性`, { category: '專案', level: 'ok' });
       setStatus(pickerMode ? '專案已確實寫入您選擇的位置（Schema 2 + SHA-256）。' : '已確認 .photojob 備份完成（Schema 2 + SHA-256）。', 'ok');
       return true;
     } catch (error) {
+      recordOperation('儲存 .photojob 失敗', String(error.message || '未知錯誤').slice(0, 300), { category: '專案', level: 'error' });
       setStatus(`儲存專案失敗：${error.message}`, 'err');
       return false;
     } finally {
@@ -3591,6 +3897,23 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
         assertProjectString(value, `selected_ids[${index}]`, MAX_PROJECT_FIELD_CHARS, { optional: false });
         if (selectedIdSet.has(value)) throw new Error(`selected_ids 包含重複 ID：${value}`);
         selectedIdSet.add(value);
+      });
+    }
+
+    if (raw.operation_log !== undefined) {
+      if (!Array.isArray(raw.operation_log)) throw new Error('operation_log 必須是陣列。');
+      if (raw.operation_log.length > MAX_OPERATION_LOG_ENTRIES) throw new Error(`operation_log 超過 ${MAX_OPERATION_LOG_ENTRIES} 筆上限。`);
+      raw.operation_log.forEach((entry, index) => {
+        if (!isPlainObject(entry)) throw new Error(`operation_log[${index}] 必須是物件。`);
+        assertProjectString(entry.id, `operation_log[${index}].id`, MAX_PROJECT_FIELD_CHARS);
+        assertProjectString(entry.timestamp, `operation_log[${index}].timestamp`, 64, { optional: false });
+        assertProjectString(entry.category, `operation_log[${index}].category`, MAX_OPERATION_LOG_CATEGORY_CHARS, { optional: false });
+        assertProjectString(entry.action, `operation_log[${index}].action`, MAX_OPERATION_LOG_ACTION_CHARS, { optional: false });
+        assertProjectString(entry.detail, `operation_log[${index}].detail`, MAX_OPERATION_LOG_DETAIL_CHARS);
+        assertProjectString(entry.level, `operation_log[${index}].level`, 16);
+        if (entry.level !== undefined && !['info','ok','warn','error'].includes(entry.level)) throw new Error(`operation_log[${index}].level 不合法。`);
+        assertProjectString(entry.session_id, `operation_log[${index}].session_id`, MAX_PROJECT_FIELD_CHARS);
+        assertProjectString(entry.app_version, `operation_log[${index}].app_version`, 80);
       });
     }
 
@@ -3789,6 +4112,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       await saveAutosaveNow();
       const migrationNote = sourceSchema < PHOTOJOB_SCHEMA_VERSION ? `；舊版 Schema ${sourceSchema} 已在記憶體中安全升級為 Schema ${PHOTOJOB_SCHEMA_VERSION}` : '';
       const integrityNote = integrityResult.verified ? '；SHA-256 完整性驗證通過' : '；舊版專案無 SHA-256，建議重新儲存一次';
+      recordOperation('開啟 .photojob', `共 ${state.items.length} 張照片｜來源 Schema ${sourceSchema}${integrityResult.verified ? '｜SHA-256 驗證通過' : '｜舊版無 SHA-256'}`, { category: '專案', level: 'ok' });
       setStatus(`專案已開啟，共 ${state.items.length} 張照片${integrityNote}${migrationNote}。`, 'ok');
       return true;
     } finally {
@@ -4039,6 +4363,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
         const img = createEl('img'); img.src = url; img.alt = `第 ${i + 1} 頁預覽`; sheet.appendChild(img);
         wrap.appendChild(sheet);
       }
+      recordOperation('產生列印版面預覽', `共 ${total} 頁｜照片 ${exportCandidateIndices(meta).length} 張。`, { category: '輸出', level: 'ok' });
       setStatus('列印版面預覽已完成。', 'ok');
     } catch (error) {
       $('previewPages').innerHTML = `<div class="status err">預覽失敗：${escapeHtml(error.message)}</div>`;
@@ -4365,8 +4690,9 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       const removed = countDocxInvalidInputChars();
       const blob = await generateWordBlob();
       downloadBlob(blob, `${safeFilename($('title').value || '照片紀錄表')}.docx`);
+      recordOperation('輸出 Word', `照片 ${exportCandidateIndices().length} 張。`, { category: '輸出', level: 'ok' });
       setStatus(removed ? `Word 文件已建立；已自動移除 ${removed} 個 Word/XML 不支援的控制字元。` : 'Word 文件已建立。', 'ok');
-    } catch (error) { console.error(error); setStatus(`Word 輸出失敗：${error.message}`, 'err'); }
+    } catch (error) { console.error(error); recordOperation('Word 輸出失敗', String(error.message || '未知錯誤').slice(0, 300), { category: '輸出', level: 'error' }); setStatus(`Word 輸出失敗：${error.message}`, 'err'); }
     finally { hideLoading(); }
   }
 
@@ -4376,8 +4702,9 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     try {
       const blob = await generatePdfBlob();
       downloadBlob(blob, `${safeFilename($('title').value || '照片紀錄表')}.pdf`);
+      recordOperation('輸出 PDF', `照片 ${exportCandidateIndices().length} 張。`, { category: '輸出', level: 'ok' });
       setStatus('PDF 已建立。', 'ok');
-    } catch (error) { console.error(error); setStatus(`PDF 輸出失敗：${error.message}`, 'err'); }
+    } catch (error) { console.error(error); recordOperation('PDF 輸出失敗', String(error.message || '未知錯誤').slice(0, 300), { category: '輸出', level: 'error' }); setStatus(`PDF 輸出失敗：${error.message}`, 'err'); }
     finally { hideLoading(); }
   }
 
@@ -4394,8 +4721,9 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       zip.file(`${base}.docx`, wordBlob); zip.file(`${base}.pdf`, pdfBlob);
       const out = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
       downloadBlob(out, `${base}_Word_PDF.zip`);
+      recordOperation('同時輸出 Word + PDF', `照片 ${exportCandidateIndices().length} 張。`, { category: '輸出', level: 'ok' });
       setStatus(removed ? `Word + PDF 已建立；Word 已自動移除 ${removed} 個 XML 不支援的控制字元。` : 'Word + PDF 已建立。', 'ok');
-    } catch (error) { console.error(error); setStatus(`同時輸出失敗：${error.message}`, 'err'); }
+    } catch (error) { console.error(error); recordOperation('Word + PDF 輸出失敗', String(error.message || '未知錯誤').slice(0, 300), { category: '輸出', level: 'error' }); setStatus(`同時輸出失敗：${error.message}`, 'err'); }
     finally { hideLoading(); }
   }
 
@@ -4420,7 +4748,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
   }
 
   async function safeSharedComputerExit() {
-    if (!confirm('這會清除本機自動儲存、案件範本，以及目前畫面中的所有照片與未另存變更。確定要安全離開嗎？')) return false;
+    if (!confirm('這會清除本機手動暫存、自動儲存、案件範本，以及目前畫面中的所有照片與未另存變更。確定要安全離開嗎？')) return false;
     const cleared = await clearAllLocalProjectData();
     if (!cleared) return false;
     revokeStateUrls();
@@ -4444,6 +4772,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     if ($('watermarkText')) $('watermarkText').value = '';
     if ($('smartLongSplit')) $('smartLongSplit').checked = true;
     state.caseArchived = false; state.caseArchivedAt = '';
+    state.operationLog = []; state.sessionId = uid(); renderOperationLog();
     $('recordDate').value = localDateString();
     $('location').value = '';
     $('perPage').value = '2';
@@ -4486,6 +4815,10 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     $('photoFilterMode')?.addEventListener('change', renderList);
     $('retryFailedImportsBtn')?.addEventListener('click', retryFailedImports);
     $('clearImportSummaryBtn')?.addEventListener('click', clearImportSummary);
+    $('exportAuditTxtBtn')?.addEventListener('click', () => exportOperationLog('TXT'));
+    $('exportAuditCsvBtn')?.addEventListener('click', () => exportOperationLog('CSV'));
+    $('exportAuditJsonBtn')?.addEventListener('click', () => exportOperationLog('JSON'));
+    $('clearAuditLogBtn')?.addEventListener('click', clearOperationLog);
 
     $('selectAllBtn').addEventListener('click', () => { state.items.forEach((item) => state.selectedIds.add(item.id)); if (($('photoFilterMode')?.value || 'all') === 'selected') renderList(); else refreshListSelectionState(); });
     $('clearSelectionBtn').addEventListener('click', () => { state.selectedIds.clear(); if (($('photoFilterMode')?.value || 'all') === 'selected') renderList(); else refreshListSelectionState(); });
@@ -4500,11 +4833,12 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       if (removed?.thumbUrl?.startsWith('blob:')) URL.revokeObjectURL(removed.thumbUrl);
       if (removed?.id) state.selectedIds.delete(removed.id);
       state.selected = Math.min(state.selected, state.items.length - 1);
-      renderList(); showSelected(); scheduleAutosave();
+      renderList(); showSelected(); recordOperation('移除照片', String(removed?.displayName || '照片').slice(0, 180), { category: '照片', level: 'warn' }); scheduleAutosave();
       showActionToast(`已移除「${removed?.displayName || '照片'}」`, true);
     });
     $('clearBtn').addEventListener('click', async () => {
       if (state.items.length && !confirm('確定要清除目前所有照片與編輯內容嗎？')) return;
+      const removedCount = state.items.length;
       revokeStateUrls(); state.items = []; state.selected = -1; state.selectedIds.clear(); state.logo = null; state.importSequence = 0; state.lastHealthResult = null;
       if ($('photoFilter')) $('photoFilter').value = '';
       if ($('photoFilterMode')) $('photoFilterMode').value = 'all';
@@ -4512,6 +4846,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       if ($('sortMode')) $('sortMode').value = 'manual';
       clearImportSummary();
       renderLogo(); renderList(); showSelected(); await clearAutosave();
+      recordOperation('清除全部照片', `共清除 ${removedCount} 張照片。`, { category: '照片', level: 'warn' });
       setStatus('照片與自動儲存資料已清除。');
     });
 
@@ -4529,6 +4864,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     $('restoreNameBtn').addEventListener('click', () => {
       if (state.selected < 0) return;
       state.items[state.selected].displayName = state.items[state.selected].originalName;
+      recordOperation('恢復原始照片檔名', auditPhotoLabel(state.items[state.selected], state.selected), { category: '單張照片', level: 'ok' });
       refreshPhotoListRow(state.items[state.selected].id); showSelected(); scheduleAutosave();
     });
     $('batchRenameBtn').addEventListener('click', batchRenameAll);
@@ -4538,12 +4874,14 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       if (state.selected < 0) return;
       state.items[state.selected].rotation = (state.items[state.selected].rotation + 270) % 360;
       state.items[state.selected].annotations = rotateAnnotations(state.items[state.selected].annotations, -90);
+      recordOperation('旋轉單張照片', `${auditPhotoLabel()}｜左轉 90°`, { category: '單張照片', level: 'ok' });
       showSelected(); scheduleAutosave();
     });
     $('rotateRightBtn').addEventListener('click', () => {
       if (state.selected < 0) return;
       state.items[state.selected].rotation = (state.items[state.selected].rotation + 90) % 360;
       state.items[state.selected].annotations = rotateAnnotations(state.items[state.selected].annotations, 90);
+      recordOperation('旋轉單張照片', `${auditPhotoLabel()}｜右轉 90°`, { category: '單張照片', level: 'ok' });
       showSelected(); scheduleAutosave();
     });
     $('batchRotateLeftBtn').addEventListener('click', () => batchRotate(-90));
@@ -4563,28 +4901,34 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     $('photoLocation').addEventListener('input', () => {
       if (state.selected >= 0) { state.items[state.selected].location = $('photoLocation').value; scheduleAutosave(); }
     });
+    $('description').addEventListener('change', () => { if (state.selected >= 0) recordOperation('修改照片說明', `${auditPhotoLabel()}｜不保存說明全文`, { category: '單張照片', level: 'ok' }); });
+    $('note').addEventListener('change', () => { if (state.selected >= 0) recordOperation('修改照片備註', `${auditPhotoLabel()}｜不保存備註全文`, { category: '單張照片', level: 'ok' }); });
+    $('photoLocation').addEventListener('change', () => { if (state.selected >= 0) recordOperation('修改照片地點', `${auditPhotoLabel()}｜不保存地點全文`, { category: '單張照片', level: 'ok' }); });
     $('copyPrevDescBtn').addEventListener('click', () => {
       if (state.selected <= 0) return;
       state.items[state.selected].description = state.items[state.selected - 1].description || '';
       $('description').value = state.items[state.selected].description;
+      recordOperation('複製上一張照片說明', auditPhotoLabel(), { category: '單張照片', level: 'ok' });
       setStatus('已複製上一張照片說明。', 'ok'); scheduleAutosave();
     });
     $('copyPrevLocationBtn').addEventListener('click', () => {
       if (state.selected <= 0) return;
       state.items[state.selected].location = state.items[state.selected - 1].location || '';
       $('photoLocation').value = state.items[state.selected].location;
+      recordOperation('複製上一張照片地點', auditPhotoLabel(), { category: '單張照片', level: 'ok' });
       setStatus('已複製上一張照片地點。', 'ok'); scheduleAutosave();
     });
     $('copyPrevNoteBtn').addEventListener('click', () => {
       if (state.selected <= 0) return;
       state.items[state.selected].note = state.items[state.selected - 1].note || '';
       $('note').value = state.items[state.selected].note;
+      recordOperation('複製上一張照片備註', auditPhotoLabel(), { category: '單張照片', level: 'ok' });
       setStatus('已複製上一張備註。', 'ok'); scheduleAutosave();
     });
     $('addQuickNoteBtn').addEventListener('click', () => {
       const value = $('newQuickNote').value.trim();
       if (!value) return;
-      if (!state.quickNotes.includes(value)) state.quickNotes.push(value);
+      if (!state.quickNotes.includes(value)) { state.quickNotes.push(value); recordOperation('新增常用說明', '新增 1 筆；操作紀錄不保存說明全文。', { category: '設定', level: 'ok' }); }
       $('newQuickNote').value = ''; renderQuickNotes(); scheduleAutosave();
     });
 
@@ -4596,11 +4940,13 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       if (String($('photoFilter')?.value || '').trim()) renderList(); else refreshPhotoListRow(item.id);
       scheduleAutosave();
     }));
+    const photoAuditLabels = { photoSection: '章節／分類', photoTags: '標籤', compareGroup: '比較組', compareRole: '改善前後角色' };
+    Object.entries(photoAuditLabels).forEach(([id, label]) => $(id)?.addEventListener('change', () => { if (state.selected >= 0) recordOperation('修改照片分類資料', `${auditPhotoLabel()}｜${label}｜不保存欄位全文`, { category: '單張照片', level: 'ok' }); }));
     ['caseNumber','watermarkText'].forEach((id) => $(id)?.addEventListener('input', scheduleAutosave));
-    $('watermarkEnabled')?.addEventListener('change', scheduleAutosave);
-    $('smartLongSplit')?.addEventListener('change', scheduleAutosave);
+    $('watermarkEnabled')?.addEventListener('change', () => { recordOperation('修改輸出設定', '浮水印開關', { category: '輸出設定', level: 'ok' }); scheduleAutosave(); });
+    $('smartLongSplit')?.addEventListener('change', () => { recordOperation('修改輸出設定', '超長照片智慧切頁', { category: '輸出設定', level: 'ok' }); scheduleAutosave(); });
     $('excludeFromExport')?.addEventListener('change', () => setCurrentExportExclusion($('excludeFromExport').checked));
-    $('exportScope')?.addEventListener('change', () => { renderExportScopeStatus(); scheduleAutosave(); });
+    $('exportScope')?.addEventListener('change', () => { recordOperation('修改輸出範圍', $('exportScope').value === 'selected' ? '只輸出已勾選照片' : '全部可輸出照片', { category: '輸出設定', level: 'ok' }); renderExportScopeStatus(); scheduleAutosave(); });
     $('archiveProjectBtn')?.addEventListener('click', toggleArchiveProject);
     $('annotationBtn').addEventListener('click', openAnnotationEditor);
     $('closeAnnotationBtn').addEventListener('click', closeAnnotationEditor);
@@ -4626,7 +4972,9 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       state.items[targetIndex].annotations = sanitizeAnnotations(state.annotationDraft);
       const count = state.items[targetIndex].annotations.length;
       state.selected = targetIndex;
-      closeAnnotationEditor(); showSelected(); refreshListSelectionState(); scheduleAutosave();
+      closeAnnotationEditor(); showSelected(); refreshListSelectionState();
+      recordOperation(count ? '套用照片註記' : '清除照片註記', `${auditPhotoLabel(state.items[targetIndex], targetIndex)}｜註記 ${count} 個`, { category: '註記', level: 'ok' });
+      scheduleAutosave();
       showActionToast(count ? `已套用 ${count} 個照片註記` : '已清除照片註記', true);
     });
 
@@ -4646,7 +4994,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
       if (hadAnnotations && !confirm('變更裁切會讓既有註記位置失準。是否清除這張照片的註記並套用裁切？')) return;
       if (hadAnnotations) item.annotations = [];
       item.crop = getCropControls();
-      $('cropModal').classList.remove('show'); showSelected(); setStatus(hadAnnotations ? '已套用照片裁切，並清除原有註記。' : '已套用照片裁切。', 'ok'); scheduleAutosave();
+      $('cropModal').classList.remove('show'); showSelected(); recordOperation('套用照片裁切', `${auditPhotoLabel(item, state.selected)}${hadAnnotations ? '｜同時清除原有註記' : ''}`, { category: '單張照片', level: 'ok' }); setStatus(hadAnnotations ? '已套用照片裁切，並清除原有註記。' : '已套用照片裁切。', 'ok'); scheduleAutosave();
     });
 
     $('logoBtn').addEventListener('click', () => $('logoInput').click());
@@ -4661,6 +5009,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
         if (state.logo?.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(state.logo.previewUrl);
         state.logo = { name: file.name, blob: normalized.blob, previewUrl: URL.createObjectURL(normalized.blob) };
         renderLogo();
+        recordOperation('加入機關 LOGO', String(file.name || 'LOGO').slice(0, 180), { category: '文件', level: 'ok' });
         setStatus(normalized.converted ? `LOGO 已加入；${file.name} 已從 HEIC/HEIF 轉為內部 JPEG。` : 'LOGO 已加入。', 'ok');
         scheduleAutosave();
       } catch (error) {
@@ -4672,11 +5021,13 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     });
     $('removeLogoBtn').addEventListener('click', () => {
       if (state.logo?.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(state.logo.previewUrl);
-      state.logo = null; renderLogo(); scheduleAutosave();
+      state.logo = null; renderLogo(); recordOperation('移除機關 LOGO', '', { category: '文件', level: 'warn' }); scheduleAutosave();
     });
 
     ['orgName', 'title', 'caseName', 'recordDate', 'location', 'perPage', 'cover', 'includePageNumber']
       .forEach((id) => $(id).addEventListener('change', scheduleAutosave));
+    const auditFieldLabels = { orgName: '機關／單位名稱', title: '文件標題', caseName: '案件／主題', caseNumber: '案件編號', recordDate: '紀錄日期', location: '文件地點', perPage: '每頁照片數', cover: '封面設定', includePageNumber: '頁碼設定' };
+    Object.entries(auditFieldLabels).forEach(([id, label]) => $(id)?.addEventListener('change', () => recordOperation('修改文件設定', label, { category: '文件', level: 'ok' }))); 
     ['orgName', 'title', 'caseName', 'location'].forEach((id) => $(id).addEventListener('input', scheduleAutosave));
 
     $('saveCaseTemplateBtn').addEventListener('click', saveCurrentCaseTemplate);
@@ -4705,6 +5056,9 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     });
 
     $('saveProjectBtn').addEventListener('click', saveProject);
+    $('tempSaveBtn').addEventListener('click', saveTemporarySession);
+    $('tempResumeBtn').addEventListener('click', () => resumeTemporarySession());
+    $('tempClearBtn').addEventListener('click', clearTemporarySession);
     $('undoBtn').addEventListener('click', undoProjectChange);
     $('redoBtn').addEventListener('click', redoProjectChange);
     $('openProjectBtn').addEventListener('click', () => $('projectInput').click());
@@ -4794,15 +5148,32 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
   }
 
   async function startup() {
+    state.sessionId = uid();
     $('recordDate').value = localDateString();
     try { state.autosaveEnabled = localStorage.getItem(AUTOSAVE_PREF_KEY) !== 'false'; } catch (_) { state.autosaveEnabled = false; }
     $('autosaveEnabled').checked = state.autosaveEnabled;
     renderAutosaveHealth();
     loadCaseTemplates();
-    bindEvents(); renderQuickNotes(); renderLogo(); renderMemoryMode(); renderList(); showSelected(); renderLargeProjectMonitor();
+    bindEvents(); renderQuickNotes(); renderLogo(); renderMemoryMode(); renderList(); showSelected(); renderLargeProjectMonitor(); renderOperationLog();
     setInterval(() => { if (!document.hidden) renderLargeProjectMonitor(); }, 5000);
     if (!librariesReady()) setStatus('JSZip 元件未載入；請確認 vendor/jszip.min.js 是否存在後重新整理。');
-    if (state.autosaveEnabled) {
+    renderTempSessionStatus();
+    const startupTempMarker = readTempSessionMarker();
+    let startupSessionHandled = false;
+    if (startupTempMarker) {
+      const tempData = await readAutosave();
+      if (tempData?.photos?.length) {
+        const parsed = new Date(startupTempMarker.saved_at);
+        const when = Number.isNaN(parsed.getTime()) ? '' : `（${parsed.toLocaleString('zh-TW', { hour12: false })}）`;
+        const resume = confirm(`偵測到上次手動暫存${when}，共 ${tempData.photos.length} 張照片，是否繼續上次工作？`);
+        if (resume) {
+          startupSessionHandled = await resumeTemporarySession({ skipConfirm: true });
+        }
+      } else {
+        clearTempSessionMarker();
+      }
+    }
+    if (!startupSessionHandled && !startupTempMarker && state.autosaveEnabled) {
       let autosave = await readAutosave();
       const journals = readRecoveryJournals();
       const recovery = newestApplicableRecoveryJournal(autosave, journals);
@@ -4821,11 +5192,13 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
             await applyProjectData(autosave);
             resetHistoryBaseline(false);
             if (recoveredJournal) await saveAutosaveNow();
+            recordOperation('自動復原專案', `已還原 ${state.items.length} 張照片${recoveredJournal ? '｜包含最後同步復原紀錄' : ''}`, { category: '暫存', level: 'ok' });
             setStatus(recoveredJournal ? '已還原上次專案與最後一筆同步復原紀錄；此內容尚未另存為 .photojob。' : '已還原上次自動儲存的專案；此內容尚未另存為 .photojob。', 'ok');
           } catch (error) { console.warn(error); setStatus(`自動儲存還原失敗：${error.message}`, 'err'); }
         }
       }
     }
+    renderTempSessionStatus();
     if (!state.historyCurrent) resetHistoryBaseline(true);
     updateButtons();
   }
