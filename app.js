@@ -7,7 +7,7 @@
   }
 
   const APP_NAME = '圖片紀錄整理助手';
-  const APP_VERSION = 'V3.8.4';
+  const APP_VERSION = 'V3.8.5';
   const PHOTOJOB_SCHEMA_VERSION = 2;
   const HISTORY_LIMIT = 30;
   const SUPPORTED_RE = /\.(jpe?g|png|webp|bmp|heic|heif)$/i;
@@ -1441,7 +1441,7 @@
       badge.hidden = !state.dirty;
       badge.textContent = state.dirty ? '● 尚未另存' : '';
     }
-    document.title = `${state.dirty ? '● ' : ''}${APP_NAME} ${APP_VERSION}｜Operation Log & Audit Trail Edition`;
+    document.title = `${state.dirty ? '● ' : ''}${APP_NAME} ${APP_VERSION}｜Audit Log Quick Access Hotfix`;
   }
 
   function refreshDirtyState() {
@@ -2472,7 +2472,7 @@
   function applyArchiveMode() {
     const archived = Boolean(state.caseArchived);
     document.body.classList.toggle('case-archived', archived);
-    const keepEnabled = new Set(['saveProjectBtn','openProjectBtn','previewBtn','wordBtn','pdfBtn','bothBtn','archiveProjectBtn','projectInput','photoFilter','tempSaveBtn','tempResumeBtn','tempClearBtn']);
+    const keepEnabled = new Set(['saveProjectBtn','openProjectBtn','previewBtn','wordBtn','pdfBtn','bothBtn','archiveProjectBtn','projectInput','photoFilter','tempSaveBtn','tempResumeBtn','tempClearBtn','auditLogShortcutBtn']);
     document.querySelectorAll('input,textarea,select,button').forEach((el) => {
       if (!el.id || keepEnabled.has(el.id) || el.closest('.modal')) return;
       if (archived) { if (!el.disabled) el.dataset.archiveDisabled = '1'; el.disabled = true; }
@@ -4787,6 +4787,20 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     return true;
   }
 
+  function openOperationLogPanel() {
+    const drawer = $('photoToolsDrawer');
+    const box = $('auditLogBox');
+    if (drawer) drawer.open = true;
+    if (!box) return;
+    try { box.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    catch (_) { box.scrollIntoView(); }
+    box.classList.remove('shortcut-highlight');
+    void box.offsetWidth;
+    box.classList.add('shortcut-highlight');
+    try { box.focus({ preventScroll: true }); } catch (_) { box.focus(); }
+    window.setTimeout(() => box.classList.remove('shortcut-highlight'), 1800);
+  }
+
   function bindEvents() {
     const drop = $('dropZone');
     const photoInput = $('photoInput');
@@ -4815,6 +4829,7 @@ ${item.compareRole || ''}`.toLocaleLowerCase('zh-Hant');
     $('photoFilterMode')?.addEventListener('change', renderList);
     $('retryFailedImportsBtn')?.addEventListener('click', retryFailedImports);
     $('clearImportSummaryBtn')?.addEventListener('click', clearImportSummary);
+    $('auditLogShortcutBtn')?.addEventListener('click', openOperationLogPanel);
     $('exportAuditTxtBtn')?.addEventListener('click', () => exportOperationLog('TXT'));
     $('exportAuditCsvBtn')?.addEventListener('click', () => exportOperationLog('CSV'));
     $('exportAuditJsonBtn')?.addEventListener('click', () => exportOperationLog('JSON'));

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; worker-src 'self' blob:">
-  <title>圖片紀錄整理助手 V3.8.4｜Operation Log & Audit Trail Edition</title>
+  <title>圖片紀錄整理助手 V3.8.5｜Audit Log Quick Access Hotfix</title>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
@@ -15,7 +15,8 @@
     <p>可愛貓貓風格｜案件管理｜操作紀錄｜進階照片註記｜個資遮蔽｜封存</p>
   </div>
   <div class="head-actions">
-    <span class="badge">V3.8.4</span><span class="autosave-top-badge" id="autosaveTopBadge">💾 尚未自動儲存</span><span class="dirty-badge" id="dirtyBadge" hidden>● 尚未另存</span>
+    <span class="badge">V3.8.5</span><span class="autosave-top-badge" id="autosaveTopBadge">💾 尚未自動儲存</span><span class="dirty-badge" id="dirtyBadge" hidden>● 尚未另存</span>
+    <button class="headbtn" id="auditLogShortcutBtn" type="button" title="開啟操作紀錄與匯出紀錄檔">📋 操作紀錄</button>
     <button class="headbtn" id="previewBtn" type="button" title="依目前設定產生實際 PDF 版面預覽">👁 列印版面預覽</button>
   </div>
 </header>
@@ -98,7 +99,7 @@
           </div>
           <div class="tiny">暫存在目前瀏覽器／裝置中；關閉網站後仍可續編。清除瀏覽器網站資料會一併刪除，跨電腦請使用 .photojob。</div>
         </div>
-        <div class="audit-log-box" id="auditLogBox">
+        <div class="audit-log-box" id="auditLogBox" tabindex="-1">
           <div class="audit-log-head"><strong>🧾 操作紀錄與稽核追蹤</strong><span id="auditLogCount">操作紀錄：0 筆</span></div>
           <div id="auditLogRecent" class="audit-log-recent" aria-live="polite"><div class="audit-log-empty">尚無操作紀錄。</div></div>
           <div class="toolbar audit-log-actions">

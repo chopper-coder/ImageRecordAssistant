@@ -292,3 +292,7 @@ header p{color:#fff3fb}
 .audit-log-time{color:#8d7886;white-space:nowrap}.audit-log-body{display:flex;gap:6px;min-width:0;flex-wrap:wrap}.audit-log-body strong{color:#78546e}.audit-log-detail{color:#7e7079;overflow-wrap:anywhere}.audit-log-empty{padding:10px;text-align:center;color:#998791;border:1px dashed #eadbe5;border-radius:10px;background:#fffdfd;font-size:11px}
 .audit-log-actions{margin:8px 0 6px}.audit-log-actions .btn{flex:1 1 92px}
 @media(max-width:720px){.audit-log-head{align-items:flex-start;flex-direction:column}.audit-log-row{grid-template-columns:1fr}.audit-log-time{white-space:normal}.audit-log-actions .btn{flex:1 1 46%}}
+
+.audit-log-box.shortcut-highlight{outline:3px solid rgba(208,116,164,.38);box-shadow:0 0 0 7px rgba(208,116,164,.10),0 12px 28px rgba(67,45,61,.12);transition:box-shadow .2s ease,outline-color .2s ease}
+.audit-log-box:focus{outline:2px solid rgba(92,139,181,.45);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){.audit-log-box.shortcut-highlight{transition:none}}

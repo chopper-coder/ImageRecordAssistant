@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## V3.8.5｜Audit Log Quick Access Hotfix
+
+- 在頁面頂端新增獨立「📋 操作紀錄」按鈕。
+- 點擊後會自動展開「更多工具與專案管理」，直接捲動至操作紀錄與匯出區。
+- 操作紀錄區加入短暫醒目提示與鍵盤焦點，讓入口更容易辨識。
+- 保留 V3.8.4 的 TXT／CSV／JSON 匯出、1,500 筆上限與稽核追蹤機制。
+
 ## V3.8.4 — Operation Log & Audit Trail Edition
 
 - 新增本機操作紀錄時間軸與最近 8 筆顯示。

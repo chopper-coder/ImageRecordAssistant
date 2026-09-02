@@ -1,10 +1,10 @@
-# 圖片紀錄整理助手 V3.8.4
+# 圖片紀錄整理助手 V3.8.5
 
-**Operation Log & Audit Trail Edition**
+**Audit Log Quick Access Hotfix**
 
 大量照片整理、HEIC/HEIF 匯入、照片說明/地點、裁切旋轉、註記與個資遮蔽、章節分類、暫存續編、Word/PDF 輸出等功能皆在瀏覽器本機處理。
 
-## V3.8.4 新增：操作紀錄與稽核追蹤
+## V3.8.5 新增：操作紀錄與稽核追蹤
 
 在「更多工具與專案管理」中新增 **操作紀錄與稽核追蹤**：
 
@@ -38,3 +38,8 @@
 正式網站：<https://chopper-coder.github.io/ImageRecordAssistant/>
 
 部署使用 `.github/workflows/pages.yml`。如果瀏覽器不方便上傳 `.github`，可把根目錄 `PAGES_WORKFLOW_COPY_THIS.yml` 的內容貼到 GitHub 既有 `.github/workflows/pages.yml`。
+
+
+## 📋 操作紀錄快速入口
+
+頁面頂端提供獨立「📋 操作紀錄」按鈕。點擊後會自動展開專案管理工具並定位到操作紀錄區，可直接匯出 TXT、CSV 或 JSON。
